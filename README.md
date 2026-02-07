@@ -3,7 +3,7 @@
 <p align="center">Your eccentric genius AI assistant.</p>
 
 <p align="center">
-  <video src="lilith.webm" autoplay loop muted playsinline width="480"></video>
+  <img src="lilith.svg" alt="Lilith" width="480">
 </p>
 <p align="center">
   <sub><em>Glitch effect by <a href="https://metaory.github.io/glitcher-app/">Glitcher App</a></em></sub>
