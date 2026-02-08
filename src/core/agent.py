@@ -79,7 +79,6 @@ class Agent:
         thought_tag_found: bool,
         on_event: callable | None,
     ) -> tuple[str, str, bool, bool]:
-        """Consume one stream chunk and update accumulated response and thought. Returns (response_text, full_thought, is_thinking, thought_tag_found)."""
         response_text = response_text + chunk
 
         if not thought_tag_found:

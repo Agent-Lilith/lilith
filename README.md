@@ -23,10 +23,11 @@ python -m src.main cli
 |---------|-------------|
 | `/help` | Show available commands |
 | `/clear` | Clear conversation history |
-| `/quit` | Exit Lilith |
 | `/start` | Start the bot (Telegram) |
 | `/external` | Use OpenRouter models (Telegram) |
 | `/local` | Use local model (Telegram) |
+| `/recover` | Reset agent if stuck after an error (Telegram) |
+| `/quit` | Exit Lilith |
 | `Ctrl+C` | Interrupt / Exit |
 
 ## Prompts
