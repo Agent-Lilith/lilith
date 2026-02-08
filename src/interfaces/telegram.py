@@ -136,6 +136,16 @@ def get_agent(user_id: int) -> Agent:
     return user_agents[user_id]
 
 
+async def _reset_agent_for_user(user_id: int) -> None:
+    if user_id not in user_agents:
+        return
+    agent = user_agents.pop(user_id)
+    try:
+        await agent.close()
+    except Exception as e:
+        logger.warning(f"Error closing agent during reset: {e}")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     user = update.effective_user
@@ -158,6 +168,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Start the bot\n"
         "/help - Show this help\n"
         "/clear - Clear conversation history\n"
+        "/recover - Reset agent if stuck after an error\n"
         "/external - Use OpenRouter free models\n"
         "/local - Use local model\n\n"
         "Just talk to me! I'll stream my brilliant thoughts in real-time. ✨"
@@ -173,6 +184,19 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🧹 Conversation cleared! ✨")
     else:
         await update.message.reply_text("Nothing to clear yet~")
+
+
+async def recover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /recover command: reset agent state after a crash or if things feel stuck."""
+    if not is_authorized(update.effective_user.id):
+        return
+    user_id = update.effective_user.id
+    await _reset_agent_for_user(user_id)
+    msg = (
+        "🔄 <b>Recovery complete</b>\n\n"
+        "All conversation history has been cleared. You can send a new message."
+    )
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
 
 
 async def external_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -446,14 +470,21 @@ async def _process_agent_chat(
 
     except Exception as e:
         logger.error(f"Error in processing: {e}", exc_info=True)
+        await _reset_agent_for_user(user_id)
+        err_text = (
+            f"Oops! My genius brain had a hiccup: {e}\n\n"
+            "🔄 <b>Recovery complete</b> — all history cleared. Please try again."
+        )
         if response_msg:
             await response_msg.edit_text(
-                f"Oops! My genius brain had a hiccup: {e}",
+                err_text,
+                parse_mode=ParseMode.HTML,
                 link_preview_options=NO_PREVIEW,
             )
         else:
             await update.message.reply_text(
-                f"Oops! My genius brain had a hiccup: {e}",
+                err_text,
+                parse_mode=ParseMode.HTML,
                 link_preview_options=NO_PREVIEW,
             )
 
@@ -509,6 +540,7 @@ def _get_handlers() -> list:
         CommandHandler("start", start),
         CommandHandler("help", help_command),
         CommandHandler("clear", clear_command),
+        CommandHandler("recover", recover_command),
         CommandHandler("external", external_command),
         CommandHandler("local", local_command),
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
@@ -523,6 +555,7 @@ async def post_init(application: Application):
         BotCommand("start", "Start the bot"),
         BotCommand("help", "Show help info"),
         BotCommand("clear", "Clear conversation history"),
+        BotCommand("recover", "Reset agent if stuck"),
         BotCommand("external", "Use OpenRouter models"),
         BotCommand("local", "Use local model"),
     ]

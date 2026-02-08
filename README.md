@@ -24,9 +24,9 @@ python -m src.main cli
 | `/help` | Show available commands |
 | `/clear` | Clear conversation history |
 | `/start` | Start the bot (Telegram) |
-| `/external` | Use OpenRouter models (Telegram) |
-| `/local` | Use local model (Telegram) |
-| `/recover` | Reset agent if stuck after an error (Telegram) |
+| `/external` | Use OpenRouter models |
+| `/local` | Use local model |
+| `/recover` | Reset agent if stuck after an error |
 | `/quit` | Exit Lilith |
 | `Ctrl+C` | Interrupt / Exit |
 

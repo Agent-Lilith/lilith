@@ -117,7 +117,6 @@ class Agent:
         return response_text, full_thought, is_thinking, thought_tag_found
 
     def _finalize_stream_response(self, response_text: str) -> tuple[str, str]:
-        """Extract final thought and clean response (strip thought tags). Returns (full_thought, clean_response)."""
         full_thought = ""
         clean_response = response_text.strip()
         thought_match = re.search(r'<(think|thought)>(.*?)</\1>', response_text, re.DOTALL)

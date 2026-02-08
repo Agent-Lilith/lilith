@@ -61,13 +61,16 @@ def print_help(use_external: bool = False):
     ├─────────────────────────────────────┤
     │  /help     - Show this help         │
     │  /clear    - Clear conversation     │
+    │  /recover  - Reset agent if stuck   │
+    │  /external - Use OpenRouter models  │
+    │  /local    - Use local model        │
     │  /quit     - Exit Lilith            │
     │  Ctrl+C    - Interrupt / Exit       │
     ╰─────────────────────────────────────╯
     To connect Google Calendar and Tasks, run once: python -m src.main google-auth
     """
     if use_external:
-        help_text += "\n    Mode: OpenRouter free models (--external)\n"
+        help_text += "\n    Mode: OpenRouter free models\n"
     print(colorize(help_text, Colors.CYAN))
 
 
@@ -98,15 +101,25 @@ def format_response(text: str) -> str:
     return "\n".join(formatted_lines)
 
 
-async def run_cli(use_external: bool = False):
-    if use_external:
+async def run_cli(initial_external: bool = False):
+    if initial_external:
         if not config.openrouter_api_key or not config.openrouter_api_key.strip():
             print(colorize("  Error: OPENROUTER_API_KEY is not set. Set it in .env to use --external.", Colors.RED))
             return
+
+    use_external = initial_external
+    openrouter_client: OpenRouterClient | None = None
+
+    def get_llm_client():
+        if use_external:
+            if not openrouter_client:
+                return OpenRouterClient()
+            return openrouter_client
+        return None
+
+    if use_external:
         openrouter_client = OpenRouterClient()
         print(colorize("  Mode: OpenRouter free models (--external)\n", Colors.DIM))
-    else:
-        openrouter_client = None
 
     print_banner()
     print(colorize("  Type /help for commands\n", Colors.DIM))
@@ -129,6 +142,29 @@ async def run_cli(use_external: bool = False):
                 agent.clear_history()
                 print(colorize("  Conversation cleared ✨\n", Colors.YELLOW))
                 continue
+
+            if command == "/recover":
+                await agent.close()
+                agent = Agent.create()
+                print(colorize("  Recovery complete", Colors.GREEN, Colors.BOLD))
+                print(colorize("  All conversation history has been cleared.", Colors.DIM))
+                print(colorize("  You can send a new message.\n", Colors.DIM))
+                continue
+
+            if command == "/external":
+                if not config.openrouter_api_key or not config.openrouter_api_key.strip():
+                    print(colorize("  Error: OPENROUTER_API_KEY is not set in .env.", Colors.RED))
+                    continue
+                use_external = True
+                if openrouter_client is None:
+                    openrouter_client = OpenRouterClient()
+                print(colorize("  Switched to OpenRouter models.\n", Colors.YELLOW))
+                continue
+
+            if command == "/local":
+                use_external = False
+                print(colorize("  Switched to local model.\n", Colors.YELLOW))
+                continue
             
             if command in ("/quit", "/exit", "/q"):
                 print(colorize("\n  Goodbye! See you soon~ ✨\n", Colors.MAGENTA))
@@ -143,7 +179,8 @@ async def run_cli(use_external: bool = False):
                     elif event_type == "thought":
                         pass
                 
-                result = await agent.chat(user_input, on_event=on_event, llm_client_override=openrouter_client)
+                llm_client = get_llm_client() if use_external else None
+                result = await agent.chat(user_input, on_event=on_event, llm_client_override=llm_client)
                 response = result.response if isinstance(result, ChatResult) else result
                 sys.stdout.write("\r" + " " * shutil.get_terminal_size().columns + "\r")
                 print(format_response(response))
@@ -180,8 +217,11 @@ async def run_cli(use_external: bool = False):
                 print(colorize("\n  [Interrupted]", Colors.YELLOW))
                 continue
             except Exception as e:
-                logger.error(f"Error during chat: {e}", e)
+                logger.error(f"Error during chat: {e}", exc_info=True)
+                await agent.close()
+                agent = Agent.create()
                 print(colorize(f"\n  Error: {e}", Colors.RED))
+                print(colorize("  Recovery complete — all history cleared. Please try again.\n", Colors.YELLOW))
                 continue
     
     except KeyboardInterrupt:
