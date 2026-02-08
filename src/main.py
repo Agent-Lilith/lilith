@@ -13,8 +13,8 @@ def main():
     
     if mode == "cli":
         from src.interfaces.cli import run_cli
-        use_external = "--external" in sys.argv
-        asyncio.run(run_cli(use_external=use_external))
+        initial_external = "--external" in sys.argv
+        asyncio.run(run_cli(initial_external=initial_external))
 
     elif mode == "google-auth":
         from src.services.google_auth import run_google_auth

@@ -148,7 +148,7 @@ class LilithLogger:
         self.log_event(event)
         if _log_in_tool.get():
             pre = self._prefix()
-            self.console.info(f"{pre}Summarizing one page (LLM: {model})")
+            self.console.info(f"{pre}LLM call (tool context)  [{model}]")
 
     def llm_response(
         self,
@@ -231,7 +231,8 @@ class LilithLogger:
         *,
         error_reason: str | None = None,
     ) -> None:
-        """Log tool completion. When success=False, pass error_reason so logs show why the tool failed."""
+        # Use tool-level prefix for the Done line before clearing _log_in_tool
+        done_prefix = self._prefix()
         _log_in_tool.set(False)
         start = _log_tool_start.get()
         _log_tool_start.set(None)
@@ -251,7 +252,7 @@ class LilithLogger:
             status = "ok"
         else:
             status = f"failed: {_short_reason(error_reason)}" if error_reason else "failed"
-        self.console.info(f"{self._prefix()}Done  {tool_name}  {result_length} chars  ({dur})  [{status}]")
+        self.console.info(f"{done_prefix}Done  {tool_name}  {result_length} chars  ({dur})  [{status}]")
         self.console.info("")
     
     def final_response(self, response: str):

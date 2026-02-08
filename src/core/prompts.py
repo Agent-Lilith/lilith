@@ -55,6 +55,13 @@ def fill_date_context(system_prompt: str, date_context: str) -> str:
     return system_prompt.replace(DATE_CONTEXT_PLACEHOLDER, date_context)
 
 
+def load_search_prompt(name: str) -> str:
+    path = _prompts_dir() / "search" / f"{name}.md"
+    if not path.exists():
+        raise FileNotFoundError(f"Search prompt not found: {path}")
+    return path.read_text().rstrip()
+
+
 def load_worker_prompt() -> str:
     path = _prompts_dir() / "worker.md"
     if not path.exists():

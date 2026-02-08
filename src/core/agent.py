@@ -242,6 +242,24 @@ class Agent:
         self.conversation = []
         logger.info("🧹 Conversation cleared")
 
+    def _get_last_user_message(self) -> str:
+        """Last human user message (not a TOOL_RESULT)."""
+        for msg in reversed(self.conversation):
+            if msg.role == "user" and not (msg.content or "").strip().startswith("TOOL_RESULT("):
+                return (msg.content or "").strip()
+        return ""
+
+    def _get_conversation_context(self, max_messages: int = 10) -> str:
+        """Recent conversation as a single string so the search orchestrator has the same context as the agent."""
+        lines: list[str] = []
+        for msg in self.conversation[-(max_messages):]:
+            role = msg.role.capitalize()
+            content = (msg.content or "").strip()
+            if msg.role == "user" and content.startswith("TOOL_RESULT("):
+                content = "[Tool result received.]"
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines) if lines else ""
+
     async def _execute_tool_turn(
         self,
         tool_name: str,
@@ -252,6 +270,12 @@ class Agent:
         self.conversation.append(Message(role="assistant", content=assistant_content))
         if on_event:
             await on_event("tool_call", {"name": tool_name, "args": args})
+        if tool_name == "universal_search":
+            args = {
+                **args,
+                "user_message": self._get_last_user_message(),
+                "conversation_context": self._get_conversation_context(),
+            }
         tool = self.tool_registry.get(tool_name)
         if not tool:
             result = ToolResult.fail(f"Tool '{tool_name}' not found.")

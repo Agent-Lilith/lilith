@@ -32,6 +32,9 @@ class Config:
     user_timezone: str
     whisper_url: str
     agent_max_iterations: int
+    mcp_email_command: str
+    mcp_email_args: list[str]
+    mcp_email_account_id: int
 
     @classmethod
     def load(cls) -> "Config":
@@ -59,6 +62,9 @@ class Config:
             user_timezone=os.getenv("USER_TIMEZONE", os.getenv("TZ", "UTC")),
             whisper_url=os.getenv("WHISPER_URL", "http://localhost:6002"),
             agent_max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "15")),
+            mcp_email_command=os.getenv("MCP_EMAIL_COMMAND", ""),
+            mcp_email_args=[a.strip() for a in os.getenv("MCP_EMAIL_ARGS", "").split(",") if a.strip()],
+            mcp_email_account_id=int(os.getenv("MCP_EMAIL_ACCOUNT_ID", "1")),
         )
     
     def validate(self) -> list[str]:

@@ -4,7 +4,7 @@ import json
 import re
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 class CalendarReadCall(BaseModel):
     tool: Literal["calendar_read"] = "calendar_read"
@@ -32,9 +32,9 @@ class CalendarWriteCall(BaseModel):
     confirm_pending_id: str = ""
 
 
-class SearchCall(BaseModel):
-    tool: Literal["search"] = "search"
-    query: str = ""
+class UniversalSearchCall(BaseModel):
+    tool: Literal["universal_search"] = "universal_search"
+    max_results: str = ""
 
 
 class ReadPageCall(BaseModel):
@@ -74,16 +74,43 @@ class ExecutePythonCall(BaseModel):
     code: str = ""
 
 
+class GetEmailCall(BaseModel):
+    tool: Literal["email_get"] = "email_get"
+    email_id: str = ""
+    account_id: str = ""
+
+
+class GetEmailThreadCall(BaseModel):
+    tool: Literal["email_get_thread"] = "email_get_thread"
+    thread_id: str = ""
+    account_id: str = ""
+
+
+class SummarizeEmailsCall(BaseModel):
+    tool: Literal["emails_summarize"] = "emails_summarize"
+    email_ids: str = ""
+    thread_id: str = ""
+    account_id: str = ""
+
+    @field_validator("email_ids", mode="before")
+    @classmethod
+    def coerce_email_ids(cls, v: object) -> str:
+        return json.dumps(v) if isinstance(v, list) else (str(v) if v is not None else "")
+
+
 ToolCallUnion = Annotated[
     Union[
         CalendarReadCall,
         CalendarWriteCall,
-        SearchCall,
+        UniversalSearchCall,
         ReadPageCall,
         ReadPagesCall,
         TasksReadCall,
         TasksWriteCall,
         ExecutePythonCall,
+        GetEmailCall,
+        GetEmailThreadCall,
+        SummarizeEmailsCall,
     ],
     Field(discriminator="tool"),
 ]
@@ -91,12 +118,15 @@ ToolCallUnion = Annotated[
 ToolCall = (
     CalendarReadCall
     | CalendarWriteCall
-    | SearchCall
+    | UniversalSearchCall
     | ReadPageCall
     | ReadPagesCall
     | TasksReadCall
     | TasksWriteCall
     | ExecutePythonCall
+    | GetEmailCall
+    | GetEmailThreadCall
+    | SummarizeEmailsCall
 )
 
 _tool_call_adapter = TypeAdapter(ToolCallUnion)
