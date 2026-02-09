@@ -58,6 +58,27 @@ def _default_query_from_context(context: str) -> str:
     return first_line[:200] if first_line else "search"
 
 
+def _query_terms(text: str) -> set[str]:
+    if not text or not text.strip():
+        return set()
+    normalized = re.sub(r"[^\w\s]", " ", text.lower())
+    return {w for w in normalized.split() if len(w) > 1}
+
+
+def _fallback_rerank(results: list[SearchResult], context: str) -> list[SearchResult]:
+    query = _default_query_from_context(context)
+    terms = _query_terms(query)
+    if not terms:
+        return sorted(results, key=lambda r: -r.relevance_score)
+
+    def key(r: SearchResult) -> tuple[float, int]:
+        text = (r.title or "") + " " + (r.content or "")
+        overlap = sum(1 for t in terms if t in text.lower())
+        return (-r.relevance_score, -overlap)
+
+    return sorted(results, key=key)
+
+
 class UniversalSearchOrchestrator:
     def __init__(self, tools: list[SearchTool], max_refinement_rounds: int = 1):
         self._tools = {t.get_source_name(): t for t in tools}
@@ -233,13 +254,18 @@ class UniversalSearchOrchestrator:
         to_rank = results[:30]
         summary = []
         for i, r in enumerate(to_rank):
-            summary.append({
+            entry: dict[str, Any] = {
                 "index": i,
                 "source": r.source,
                 "title": r.title[:80],
-                "preview": r.content[:180],
+                "preview": r.content[:280],
                 "timestamp": r.timestamp,
-            })
+            }
+            if r.metadata:
+                hints = {k: v for k, v in r.metadata.items() if k in ("url", "from", "to") and v}
+                if hints:
+                    entry["metadata"] = hints
+            summary.append(entry)
         prompt = (
             self._prompt_rerank.replace("{context}", context)
             .replace("{results_summary}", json.dumps(summary, indent=2))
@@ -250,14 +276,18 @@ class UniversalSearchOrchestrator:
             indices = _parse_json_array(raw, [])
         finally:
             logger.set_tool_step(None)
-        if not indices:
-            return sorted(results, key=lambda x: -x.relevance_score)
+        validated_indices: list[int] = []
         seen: set[int] = set()
-        reranked: list[SearchResult] = []
-        for idx in indices:
-            if isinstance(idx, int) and 0 <= idx < len(to_rank) and idx not in seen:
-                seen.add(idx)
-                reranked.append(to_rank[idx])
+        for x in indices:
+            if isinstance(x, int) and 0 <= x < len(to_rank) and x not in seen:
+                seen.add(x)
+                validated_indices.append(x)
+        if not validated_indices:
+            logger.warning("rerank returned invalid or empty indices, using fallback sort")
+            return _fallback_rerank(results, context)
+        if len(validated_indices) < len(to_rank):
+            logger.debug(f"rerank returned {len(validated_indices)}/{len(to_rank)} indices, appending missing")
+        reranked: list[SearchResult] = [to_rank[idx] for idx in validated_indices]
         for i, r in enumerate(to_rank):
             if i not in seen:
                 reranked.append(r)
@@ -271,6 +301,10 @@ class UniversalSearchOrchestrator:
         max_results: int = 20,
         do_refinement: bool = True,
     ) -> UniversalSearchResponse:
+        """
+        Pipeline (refine does NOT re-run intent/plan):
+          intent → plan → execute plan → [refine LLM → if extra steps, execute them] → rerank.
+        """
         if user_message and conversation_context:
             context = (user_message.strip() + "\n\n" + conversation_context.strip()).strip()
         else:
@@ -320,7 +354,9 @@ class UniversalSearchOrchestrator:
             refinement_rounds += 1
             extra_plan = await self._refine_plan(context, intent, all_results, all_steps)
             if not extra_plan:
+                logger.debug("universal_search › refine returned 0 steps, no extra search")
                 break
+            logger.debug(f"universal_search › refine returned {len(extra_plan)} steps, executing")
             all_steps.extend(extra_plan)
             ref_results, ref_errors = await self._execute_plan(extra_plan)
             all_results.extend(ref_results)
