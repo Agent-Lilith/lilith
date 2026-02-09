@@ -7,6 +7,7 @@ import re
 import bleach
 from markdown_it import MarkdownIt
 from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from telegram.error import NetworkError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -31,7 +32,6 @@ user_model_mode: dict[int, str] = {}
 user_last_run_log: dict[int, dict] = {}
 
 class ThrottledEditor:
-    """Helper to edit a message at most once per second to avoid rate limits."""
     def __init__(self, message, initial_content="", parse_mode=ParseMode.HTML, use_markdown=False):
         self.message = message
         self.content = initial_content
@@ -92,7 +92,6 @@ _md_renderer = MarkdownIt("commonmark", {"breaks": True})
 
 
 def md_to_html(text: str) -> str:
-    """Convert Markdown to Telegram-compatible HTML using markdown-it-py."""
     if not text or not text.strip():
         return ""
     html_out = _md_renderer.render(text)
@@ -147,7 +146,6 @@ async def _reset_agent_for_user(user_id: int) -> None:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command."""
     user = update.effective_user
     if not is_authorized(user.id):
         await update.message.reply_text("I'm sorry, Dave. I'm afraid I can't do that. (Unauthorized)")
@@ -162,7 +160,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command."""
     help_text = (
         "<b>Commands:</b>\n"
         "/start - Start the bot\n"
@@ -177,7 +174,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /clear command."""
     user_id = update.effective_user.id
     if user_id in user_agents:
         user_agents[user_id].clear_history()
@@ -187,7 +183,6 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def recover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /recover command: reset agent state after a crash or if things feel stuck."""
     if not is_authorized(update.effective_user.id):
         return
     user_id = update.effective_user.id
@@ -200,7 +195,6 @@ async def recover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def external_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /external command: switch to OpenRouter free models."""
     if not is_authorized(update.effective_user.id):
         return
     if not config.openrouter_api_key or not config.openrouter_api_key.strip():
@@ -215,7 +209,6 @@ async def external_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def local_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /local command: switch back to local model."""
     if not is_authorized(update.effective_user.id):
         return
     user_model_mode[update.effective_user.id] = "local"
@@ -229,7 +222,6 @@ def is_authorized(user_id: int) -> bool:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle user messages."""
     user_id = update.effective_user.id
     if not is_authorized(user_id):
         return
@@ -259,7 +251,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle voice messages. Status message shows: Downloading... → Transcribing... → transcribed text (replaced in place). Response is a separate message with Details button."""
     user_id = update.effective_user.id
     if not is_authorized(user_id):
         return
@@ -308,7 +299,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             voice_file_path.unlink()
 
 def _format_run_log(model: str, thought: str, activities: list[str]) -> str:
-    """Format run log for Details as plain text so splitting never breaks HTML."""
     parts = []
     if model:
         parts.append(f"Model\n{model}")
@@ -332,7 +322,6 @@ async def _process_agent_chat(
     response_editor=None,
     llm_client_override=None,
 ):
-    """Run agent.chat; update response_msg/editor and collect run log for Details."""
     user_id = update.effective_user.id
     agent = get_agent(user_id)
     model_name = config.vllm_model
@@ -489,7 +478,6 @@ async def _process_agent_chat(
             )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button clicks."""
     query = update.callback_query
     await query.answer()
     
@@ -534,8 +522,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 
+async def _telegram_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    err = context.error
+    if err is None:
+        return
+    msg = str(err).strip() or err.__class__.__name__
+    if isinstance(err, NetworkError) or "disconnected" in msg.lower() or "connection" in msg.lower():
+        logger.warning(f"Telegram network: {msg}")
+    else:
+        logger.error(f"Telegram: {msg}", exception=err)
+
+
 def _get_handlers() -> list:
-    """Return (handler, ...) list so run_telegram() can add_handler in a loop."""
     return [
         CommandHandler("start", start),
         CommandHandler("help", help_command),
@@ -550,7 +548,6 @@ def _get_handlers() -> list:
 
 
 async def post_init(application: Application):
-    """Register commands with Telegram (for menu and autocomplete)."""
     commands = [
         BotCommand("start", "Start the bot"),
         BotCommand("help", "Show help info"),
@@ -564,7 +561,6 @@ async def post_init(application: Application):
 
 
 def run_telegram():
-    """Run the Telegram bot."""
     if not config.telegram_token:
         logger.error("TELEGRAM_TOKEN not set!")
         print("Error: TELEGRAM_TOKEN not set in .env")
@@ -585,6 +581,7 @@ def run_telegram():
 
     for handler in _get_handlers():
         application.add_handler(handler)
+    application.add_error_handler(_telegram_error_handler)
 
     application.run_polling()
 
