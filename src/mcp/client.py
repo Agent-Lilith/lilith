@@ -1,14 +1,13 @@
 """Generic MCP client for STDIO transport. Reusable across MCP servers."""
 
 import json
-import logging
 from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-logger = logging.getLogger(__name__)
+from src.core.logger import logger
 
 
 def _extract_text_from_content(content: list) -> str:
@@ -45,7 +44,7 @@ class MCPClient:
             ClientSession(read_stream, write_stream)
         )
         await self._session.initialize()
-        logger.info("MCP client connected to %s %s", self._command, " ".join(self._args))
+        logger.info(f"MCP: connected  {self._command}  {' '.join(self._args)}")
 
     async def call_tool(
         self,
@@ -65,10 +64,10 @@ class MCPClient:
                 return data
             return {"success": True, "output": text}
         except json.JSONDecodeError as e:
-            logger.warning("MCP tool returned non-JSON: %s", e)
+            logger.warning(f"MCP: tool returned non-JSON  {e}")
             return {"success": False, "error": f"Invalid tool response: {e!s}"}
         except Exception as e:
-            logger.exception("MCP call_tool failed: %s", name)
+            logger.exception(f"MCP: call_tool failed  {name}")
             return {"success": False, "error": f"MCP call failed: {e!s}"}
 
     async def close(self) -> None:
@@ -76,4 +75,4 @@ class MCPClient:
             await self._exit_stack.aclose()
             self._exit_stack = None
             self._session = None
-            logger.info("MCP client disconnected")
+            logger.info("MCP: disconnected")

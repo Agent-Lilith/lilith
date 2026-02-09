@@ -77,15 +77,27 @@ class LilithLogger:
     def _setup_console_logger(self):
         self.console = logging.getLogger("lilith")
         self.console.setLevel(logging.DEBUG)
+        self._console_formatter = logging.Formatter(
+            "%(asctime)s │ %(message)s",
+            datefmt="%H:%M:%S"
+        )
         if not self.console.handlers:
             handler = logging.StreamHandler()
             handler.setLevel(logging.INFO)
-            formatter = logging.Formatter(
-                "%(asctime)s │ %(message)s",
-                datefmt="%H:%M:%S"
-            )
-            handler.setFormatter(formatter)
+            handler.setFormatter(self._console_formatter)
             self.console.addHandler(handler)
+        self._setup_third_party_console_logging()
+
+    def _setup_third_party_console_logging(self):
+        """Route MCP and core.embeddings to our console format. Exclude httpx to avoid Telegram/API request spam."""
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(self._console_formatter)
+        for name in ("mcp", "core.embeddings"):
+            log = logging.getLogger(name)
+            log.setLevel(logging.INFO)
+            log.propagate = False
+            log.addHandler(handler)
 
     def log_event(self, event: LogEvent) -> None:
         with self._file_lock:
@@ -344,6 +356,24 @@ class LilithLogger:
     
     def info(self, message: str):
         self.console.info(message)
+
+    def warning(self, message: str, **kwargs):
+        event = LogEvent(
+            event_type="WARNING",
+            timestamp=self._timestamp(),
+            data={"message": message[:500]}
+        )
+        self.log_event(event)
+        self.console.warning(f"⚠️ {message}", **kwargs)
+
+    def exception(self, message: str, **kwargs):
+        event = LogEvent(
+            event_type="ERROR",
+            timestamp=self._timestamp(),
+            data={"message": message[:500]}
+        )
+        self.log_event(event)
+        self.console.exception(f"❌ {message}", **kwargs)
 
     def debug(self, message: str):
         event = LogEvent(
