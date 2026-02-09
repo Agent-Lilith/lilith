@@ -14,8 +14,8 @@ from src.tools import (
     TasksReadTool,
     TasksWriteTool,
 )
-from src.search import UniversalSearchOrchestrator
-from src.search.backends import (
+from src.orchestrators.search import UniversalSearchOrchestrator
+from src.orchestrators.search.backends import (
     WebSearchBackend,
     EmailSearchBackend,
     CalendarSearchBackend,

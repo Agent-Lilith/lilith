@@ -3,13 +3,11 @@
 import asyncio
 from typing import Any
 
-from src.search.interface import SearchTool
-from src.search.models import SearchResult
+from src.orchestrators.search.interface import SearchTool
+from src.orchestrators.search.models import SearchResult
 
 
 class TasksSearchBackend(SearchTool):
-    """Lists tasks from the default (or specified) task list; optionally filters by query on title/notes."""
-
     def __init__(self, google_service: Any):
         self._service = google_service
 

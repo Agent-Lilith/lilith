@@ -1,8 +1,8 @@
-"""Universal Search tool: single entry point. Agent only decides that search is needed; context is injected."""
+"""Universal Search tool: single entry point for web + email (and future) search."""
 
 from src.core.prompts import get_tool_description, get_tool_examples
-from src.search import UniversalSearchOrchestrator
-from src.search.models import UniversalSearchResponse
+from src.orchestrators.search import UniversalSearchOrchestrator
+from src.orchestrators.search.models import UniversalSearchResponse
 from src.tools.base import Tool, ToolResult
 
 

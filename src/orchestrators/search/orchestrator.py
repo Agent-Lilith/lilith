@@ -10,12 +10,11 @@ from src.core.prompts import load_search_prompt
 from src.core.worker import current_llm_client
 from src.llm.vllm_client import create_client
 from src.observability import traceable
-from src.search.interface import SearchTool
-from src.search.models import SearchResult, SearchResultItem, UniversalSearchResponse
+from src.orchestrators.search.interface import SearchTool
+from src.orchestrators.search.models import SearchResult, SearchResultItem, UniversalSearchResponse
 
 
 def _extract_json(text: str) -> str:
-    """Take first ```json ... ``` block or bare JSON from text."""
     text = (text or "").strip()
     if not text:
         return "{}"
@@ -60,8 +59,6 @@ def _default_query_from_context(context: str) -> str:
 
 
 class UniversalSearchOrchestrator:
-    """Runs intent analysis, tool selection, search plan, execution, optional refinement, and rerank."""
-
     def __init__(self, tools: list[SearchTool], max_refinement_rounds: int = 1):
         self._tools = {t.get_source_name(): t for t in tools}
         self._max_refinement_rounds = max(0, max_refinement_rounds)
@@ -274,11 +271,6 @@ class UniversalSearchOrchestrator:
         max_results: int = 20,
         do_refinement: bool = True,
     ) -> UniversalSearchResponse:
-        """
-        Run search using full context (same information the agent has).
-        conversation_context: recent messages (injected by agent loop).
-        user_message: last human message (injected). Used if conversation_context is empty.
-        """
         if user_message and conversation_context:
             context = (user_message.strip() + "\n\n" + conversation_context.strip()).strip()
         else:

@@ -5,13 +5,11 @@ from typing import Any
 import httpx
 
 from src.core.config import config
-from src.search.interface import SearchTool
-from src.search.models import SearchResult
+from src.orchestrators.search.interface import SearchTool
+from src.orchestrators.search.models import SearchResult
 
 
 class WebSearchBackend(SearchTool):
-    """SearXNG-backed web search."""
-
     def __init__(self, base_url: str | None = None):
         search_url = base_url or config.searxng_url or ""
         self._base_url = search_url.rstrip("/") if search_url else ""

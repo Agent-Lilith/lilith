@@ -4,8 +4,8 @@ import json
 from typing import Any
 
 from src.core.config import config
-from src.search.interface import SearchTool
-from src.search.models import SearchResult
+from src.orchestrators.search.interface import SearchTool
+from src.orchestrators.search.models import SearchResult
 
 
 def _parse_list(v: Any) -> list[str] | None:
@@ -26,12 +26,7 @@ def _parse_list(v: Any) -> list[str] | None:
 
 
 class EmailSearchBackend(SearchTool):
-    """MCP emails_search wrapper."""
-
     def __init__(self, mcp_call_tool: callable, account_id: int | None = None):
-        """
-        mcp_call_tool: async (name: str, arguments: dict) -> dict with success, output/error.
-        """
         self._mcp_call = mcp_call_tool
         self._account_id = account_id or config.mcp_email_account_id
 

@@ -7,8 +7,6 @@ from pydantic import BaseModel, Field
 
 
 class SearchResultItem(BaseModel):
-    """One item in the structured search response (JSON-serializable)."""
-
     source: str = Field(description="Backend name: web, email, etc.")
     title: str = Field(default="", description="Display title")
     content: str = Field(default="", description="Snippet or main text")
@@ -18,8 +16,6 @@ class SearchResultItem(BaseModel):
 
 
 class SearchResult:
-    """Internal unified result from a backend (before serialization)."""
-
     __slots__ = ("content", "source", "title", "timestamp", "metadata", "relevance_score")
 
     def __init__(
@@ -56,8 +52,6 @@ class SearchResult:
 
 
 class UniversalSearchResponse(BaseModel):
-    """Structured JSON returned by the universal_search tool."""
-
     results: list[SearchResultItem] = Field(default_factory=list, description="Ordered search results")
     errors: list[str] = Field(default_factory=list, description="Partial failures (e.g. one source failed)")
     meta: dict[str, Any] = Field(

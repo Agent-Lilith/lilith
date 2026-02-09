@@ -3,8 +3,8 @@
 import asyncio
 from typing import Any
 
-from src.search.interface import SearchTool
-from src.search.models import SearchResult
+from src.orchestrators.search.interface import SearchTool
+from src.orchestrators.search.models import SearchResult
 
 
 def _event_start_iso(event: dict) -> str | None:
@@ -14,8 +14,6 @@ def _event_start_iso(event: dict) -> str | None:
 
 
 class CalendarSearchBackend(SearchTool):
-    """Lists calendar events in a time range; maps each to SearchResult. Uses GoogleService (sync API)."""
-
     def __init__(self, google_service: Any):
         self._service = google_service
 
