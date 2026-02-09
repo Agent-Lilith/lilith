@@ -26,7 +26,6 @@ class WebSearchBackend(SearchTool):
     ) -> list[SearchResult]:
         if not self._base_url:
             return []
-        # Same params and client usage as legacy SearXNG tool
         params = {"q": query, "format": "json", "language": "en-US"}
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
@@ -39,7 +38,6 @@ class WebSearchBackend(SearchTool):
         raw = data.get("results", [])
         results: list[SearchResult] = []
         for i, item in enumerate(raw[:top_k]):
-            # title, content, url (content is primary in SearXNG)
             title = item.get("title") or "No Title"
             content = item.get("content") or item.get("snippet") or "No content available"
             url = item.get("url") or "#"

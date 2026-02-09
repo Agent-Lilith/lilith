@@ -4,6 +4,8 @@ import asyncio
 import html as html_module
 import re
 import time
+from urllib.parse import urlparse
+
 import httpx
 from src.core.config import config
 from src.core.logger import logger
@@ -354,7 +356,25 @@ class ReadPagesTool(Tool):
             url_list = url_list[:_READ_PAGES_MAX_URLS]
             logger.debug(f"read_pages: limited to first {_READ_PAGES_MAX_URLS} URLs")
         logger.tool_execute(self.name, {"urls_count": len(url_list), "topic": topic})
-        results = await asyncio.gather(*[_fetch_one_url(u, topic) for u in url_list])
+        total = len(url_list)
+
+        def _url_hint(url: str) -> str:
+            try:
+                netloc = urlparse(url.strip()).netloc
+                if netloc:
+                    return netloc
+            except Exception:
+                pass
+            return url[:40] if len(url) > 40 else url
+
+        async def _fetch_with_index(i: int, url: str, topic_str: str) -> ToolResult:
+            logger.set_page_index(i + 1, total)
+            logger.set_page_hint(_url_hint(url))
+            return await _fetch_one_url(url, topic_str)
+
+        results = await asyncio.gather(
+            *[_fetch_with_index(i, u, topic) for i, u in enumerate(url_list)]
+        )
         parts = []
         for u, res in zip(url_list, results):
             short_url = u if len(u) <= 80 else u[:77] + "..."

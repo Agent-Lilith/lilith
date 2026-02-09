@@ -1,11 +1,13 @@
 """OpenRouter client: chat completions using a manual list of model IDs (try in order, fallback on failure)."""
 
-import httpx
 import json
+
+import httpx
+
 from src.core.config import config
 from src.core.logger import logger
 from src.llm.formatters import ChatMLFormatter
-
+from src.observability import trace
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
@@ -55,9 +57,31 @@ class OpenRouterClient:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
+        prompt_preview = prompt[-500:] if len(prompt) > 500 else prompt
         if stream:
+            async with trace(
+                "openrouter_generate",
+                "llm",
+                inputs={"prompt_preview": prompt_preview, "stream": True},
+                metadata={"provider": "openrouter"},
+            ) as run:
+                run.end(outputs={"streamed": True})
             return self._generate_stream_fallback(payload_base, headers, prompt)
-        return await self._generate_non_stream(payload_base, headers, prompt)
+        async with trace(
+            "openrouter_generate",
+            "llm",
+            inputs={"prompt_preview": prompt_preview},
+            metadata={"provider": "openrouter"},
+        ) as run:
+            result = await self._generate_non_stream(payload_base, headers, prompt)
+            run.end(
+                outputs={
+                    "text_preview": (result.text or "")[:500],
+                    "tokens_used": getattr(result, "tokens_used", 0),
+                    "model": getattr(result, "model", None),
+                }
+            )
+            return result
 
     async def _generate_stream_fallback(self, payload_base: dict, headers: dict, prompt: str):
         last_error: Exception | None = None

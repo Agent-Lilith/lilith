@@ -10,6 +10,7 @@ from src.core.agent import Agent, ChatResult
 from src.core.config import config
 from src.core.logger import logger
 from src.llm.openrouter_client import OpenRouterClient
+from src.observability import flush, trace
 from src.utils.confirm import run_confirmation_flow
 
 
@@ -171,16 +172,24 @@ async def run_cli(initial_external: bool = False):
                 break
             try:
                 print()
-                
+
                 async def on_event(event_type, data):
                     if event_type == "token":
                         sys.stdout.write(colorize(data, Colors.MAGENTA))
                         sys.stdout.flush()
                     elif event_type == "thought":
                         pass
-                
+
                 llm_client = get_llm_client() if use_external else None
-                result = await agent.chat(user_input, on_event=on_event, llm_client_override=llm_client)
+                async with trace(
+                    "Lilith Chat",
+                    "chain",
+                    inputs={"user_message": user_input[:500]},
+                    metadata={"interface": "cli"},
+                ) as run:
+                    result = await agent.chat(user_input, on_event=on_event, llm_client_override=llm_client)
+                    response = result.response if isinstance(result, ChatResult) else result
+                    run.end(outputs={"response_preview": (response or "")[:500]})
                 response = result.response if isinstance(result, ChatResult) else result
                 sys.stdout.write("\r" + " " * shutil.get_terminal_size().columns + "\r")
                 print(format_response(response))
@@ -230,6 +239,7 @@ async def run_cli(initial_external: bool = False):
         await agent.close()
         if openrouter_client:
             await openrouter_client.close()
+        flush()
 
 
 def main():

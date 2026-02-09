@@ -12,6 +12,7 @@ from src.core.bootstrap import save_system_prompt_for_debug, setup_tools
 from src.core.config import config
 from src.core.logger import logger
 from src.core.prompts import fill_date_context
+from src.observability import trace
 from src.core.tool_call import (
     get_tool_arguments,
     get_tool_name,
@@ -124,9 +125,12 @@ class Agent:
             full_thought = thought_match.group(2).strip()
             clean_response = response_text.replace(thought_match.group(0), "").strip()
         elif "Thought:" in response_text:
-            parts = response_text.split("Thought:", 1)[1].split("\n\n", 1)
-            full_thought = parts[0].strip()
-            clean_response = parts[1].strip() if len(parts) > 1 else ""
+            before_thought, after_thought = response_text.split("Thought:", 1)
+            after_parts = after_thought.split("\n\n", 1)
+            full_thought = after_parts[0].strip()
+            response_after = after_parts[1].strip() if len(after_parts) > 1 else ""
+            before_stripped = before_thought.strip()
+            clean_response = (before_stripped + "\n\n" + response_after).strip() if response_after else before_stripped
         return full_thought, clean_response
 
     async def _chat_impl(self, user_input: str, on_event: callable, client) -> ChatResult:
@@ -280,10 +284,23 @@ class Agent:
         if not tool:
             result = ToolResult.fail(f"Tool '{tool_name}' not found.")
         else:
-            try:
-                result = await tool.execute(**args)
-            except Exception as e:
-                result = ToolResult.fail(str(e))
+            async with trace(
+                tool_name,
+                "tool",
+                inputs={k: v for k, v in args.items() if k != "conversation_context"},
+                metadata={"tool": tool_name},
+            ) as run:
+                try:
+                    result = await tool.execute(**args)
+                    run.end(
+                        outputs={
+                            "success": result.success,
+                            "output_preview": (result.output or result.error)[:500],
+                        }
+                    )
+                except Exception as e:
+                    result = ToolResult.fail(str(e))
+                    run.end(outputs={"success": False, "error": str(e)})
         result_content = result.output if result.success else result.error
         result_msg = f"TOOL_RESULT({tool_name}): {result_content}"
         self.conversation.append(Message(role="user", content=result_msg))

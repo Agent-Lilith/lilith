@@ -9,6 +9,7 @@ from src.core.logger import logger
 from src.core.prompts import load_search_prompt
 from src.core.worker import current_llm_client
 from src.llm.vllm_client import create_client
+from src.observability import traceable
 from src.search.interface import SearchTool
 from src.search.models import SearchResult, SearchResultItem, UniversalSearchResponse
 
@@ -46,7 +47,6 @@ def _parse_json_array(text: str, default: list[Any]) -> list[Any]:
 
 
 def _default_query_from_context(context: str) -> str:
-    """One-line summary for meta.query; strip role prefixes so it stays human-readable."""
     if not context or not context.strip():
         return "search"
     first_line = context.strip().split("\n")[0].strip()
@@ -90,17 +90,21 @@ class UniversalSearchOrchestrator:
 
     async def _analyze_intent(self, context: str) -> dict[str, Any]:
         prompt = self._prompt_intent.replace("{context}", context)
-        raw = await self._generate(prompt, max_tokens=400)
-        return _parse_json_object(
-            raw,
-            {
-                "intent": "find_information",
-                "entities": [],
-                "temporal": None,
-                "source_hints": [],
-                "ambiguities": [],
-            },
-        )
+        logger.set_tool_step("intent")
+        try:
+            raw = await self._generate(prompt, max_tokens=400)
+            return _parse_json_object(
+                raw,
+                {
+                    "intent": "find_information",
+                    "entities": [],
+                    "temporal": None,
+                    "source_hints": [],
+                    "ambiguities": [],
+                },
+            )
+        finally:
+            logger.set_tool_step(None)
 
     def _select_tools(self, context: str, intent: dict[str, Any]) -> list[str]:
         scores: dict[str, float] = {}
@@ -131,8 +135,12 @@ class UniversalSearchOrchestrator:
             .replace("{intent}", json.dumps(intent, indent=2))
             .replace("{selected_tools}", ", ".join(selected_tools))
         )
-        raw = await self._generate(prompt, max_tokens=600)
-        plan = _parse_json_array(raw, [])
+        logger.set_tool_step("plan")
+        try:
+            raw = await self._generate(prompt, max_tokens=600)
+            plan = _parse_json_array(raw, [])
+        finally:
+            logger.set_tool_step(None)
         if not plan:
             plan = [{"tool": t, "query": default_query, "filters": {}} for t in selected_tools]
         validated: list[dict[str, Any]] = []
@@ -199,8 +207,12 @@ class UniversalSearchOrchestrator:
             .replace("{results_summary}", results_summary)
             .replace("{previous_steps}", json.dumps(previous_steps[:10]))
         )
-        raw = await self._generate(prompt, max_tokens=400)
-        plan = _parse_json_array(raw, [])
+        logger.set_tool_step("refine")
+        try:
+            raw = await self._generate(prompt, max_tokens=400)
+            plan = _parse_json_array(raw, [])
+        finally:
+            logger.set_tool_step(None)
         validated: list[dict[str, Any]] = []
         for step in plan:
             if not isinstance(step, dict):
@@ -235,8 +247,12 @@ class UniversalSearchOrchestrator:
             self._prompt_rerank.replace("{context}", context)
             .replace("{results_summary}", json.dumps(summary, indent=2))
         )
-        raw = await self._generate(prompt, max_tokens=200)
-        indices = _parse_json_array(raw, [])
+        logger.set_tool_step("rerank")
+        try:
+            raw = await self._generate(prompt, max_tokens=200)
+            indices = _parse_json_array(raw, [])
+        finally:
+            logger.set_tool_step(None)
         if not indices:
             return sorted(results, key=lambda x: -x.relevance_score)
         seen: set[int] = set()
@@ -250,6 +266,7 @@ class UniversalSearchOrchestrator:
                 reranked.append(r)
         return reranked
 
+    @traceable(name="universal_search", run_type="chain")
     async def search(
         self,
         conversation_context: str = "",
@@ -262,7 +279,10 @@ class UniversalSearchOrchestrator:
         conversation_context: recent messages (injected by agent loop).
         user_message: last human message (injected). Used if conversation_context is empty.
         """
-        context = (conversation_context or user_message or "").strip()
+        if user_message and conversation_context:
+            context = (user_message.strip() + "\n\n" + conversation_context.strip()).strip()
+        else:
+            context = (user_message or conversation_context or "").strip()
         if not context:
             return UniversalSearchResponse(
                 results=[],

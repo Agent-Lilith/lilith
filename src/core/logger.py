@@ -1,23 +1,23 @@
-"""Structured logging: console, file, and external-call logs.
-"""
+"""Structured logging: console, file, and external-call logs."""
 
 import contextvars
 import json
 import logging
+import os
+import shutil
+import sys
+import textwrap
 import threading
 import time
-from pathlib import Path
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
-from dataclasses import dataclass, asdict
-import textwrap
-import shutil
 
 from src.core.config import config
 
 
 def _format_duration(seconds: float) -> str:
-    """Human-readable duration, e.g. 1m 15s, 12.3s, <0.1s."""
     if seconds < 0:
         return "0s"
     if seconds >= 60:
@@ -48,6 +48,62 @@ _llm_ctx: contextvars.ContextVar[tuple[float, str] | None] = contextvars.Context
 _log_in_turn: contextvars.ContextVar[bool] = contextvars.ContextVar("log_in_turn", default=False)
 _log_in_tool: contextvars.ContextVar[bool] = contextvars.ContextVar("log_in_tool", default=False)
 _log_tool_start: contextvars.ContextVar[float | None] = contextvars.ContextVar("log_tool_start", default=None)
+_log_tool_name: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_tool_name", default=None)
+_log_tool_step: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_tool_step", default=None)
+_log_page_index: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_page_index", default=None)
+_log_page_hint: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_page_hint", default=None)
+
+
+def _use_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _c(role: str) -> str:
+    if not _use_color():
+        return ""
+    # 38;5;N = foreground 256-color
+    codes = {
+        "dim": "\033[38;5;239m",
+        "tool": "\033[38;5;81m",      # cyan for tool/step names
+        "llm_call": "\033[38;5;81m",  # same cyan so "LLM call (tool › step)" is readable
+        "run": "\033[38;5;78m",       # green for Run
+        "done_ok": "\033[38;5;78m",   # green for Done / [ok]
+        "done_fail": "\033[38;5;203m",  # red for [failed]
+        "duration": "\033[38;5;221m",   # yellow for durations
+        "model": "\033[38;5;245m",    # dim gray for model name
+        "reply": "\033[38;5;246m",    # muted for reply preview
+    }
+    return codes.get(role, "")
+
+
+def _reset() -> str:
+    if not _use_color():
+        return ""
+    return "\033[0m"
+
+
+def _tool_label() -> str:
+    name = _log_tool_name.get() or "tool"
+    step = _log_tool_step.get()
+    page_index = _log_page_index.get()
+    if step:
+        return f"{name} › {step}"
+    if page_index:
+        return f"{name} {page_index}"
+    return name
+
+
+def _page_hint_suffix() -> str:
+    """Short suffix for console when in read_pages (e.g. '  pbs.org')."""
+    hint = _log_page_hint.get()
+    if not hint:
+        return ""
+    return f"  {hint}"
 
 
 @dataclass
@@ -89,7 +145,6 @@ class LilithLogger:
         self._setup_third_party_console_logging()
 
     def _setup_third_party_console_logging(self):
-        """Route MCP and core.embeddings to our console format. Exclude httpx to avoid Telegram/API request spam."""
         handler = logging.StreamHandler()
         handler.setLevel(logging.INFO)
         handler.setFormatter(self._console_formatter)
@@ -108,12 +163,27 @@ class LilithLogger:
         return datetime.now().isoformat()
 
     def _prefix(self) -> str:
-        """Turn indent (under user) + optional tool indent (Worker under tool)."""
         if _log_in_tool.get():
             return "  │   └ "
         if _log_in_turn.get():
             return "  │ "
         return ""
+
+    def set_tool_step(self, step: str | None) -> None:
+        _log_tool_step.set(step)
+
+    def set_page_index(self, index: int | None, total: int | None = None) -> None:
+        if index is None or total is None or total <= 0:
+            _log_page_index.set(None)
+        else:
+            _log_page_index.set(f"{index}/{total}")
+
+    def set_page_hint(self, hint: str | None) -> None:
+        """Set short page hint (e.g. domain) for read_pages. Cleared in tool_result."""
+        if not hint or not hint.strip():
+            _log_page_hint.set(None)
+        else:
+            _log_page_hint.set(hint.strip()[:40])
 
     def _format_tool_args(self, args: dict) -> str:
         """Shorten args for console so long code/urls don't flood the log."""
@@ -160,7 +230,11 @@ class LilithLogger:
         self.log_event(event)
         if _log_in_tool.get():
             pre = self._prefix()
-            self.console.info(f"{pre}LLM call (tool context)  [{model}]")
+            label = _tool_label()
+            hint = _page_hint_suffix()
+            self.console.info(
+                f"{pre}{_c('llm_call')}LLM call ({label}){_reset()}{hint}  [{_reset()}{_c('model')}{model}{_reset()}]"
+            )
 
     def llm_response(
         self,
@@ -196,13 +270,18 @@ class LilithLogger:
         self.log_event(event)
         pre = self._prefix()
         dur = _format_duration(elapsed)
+        dur_colored = f"{_c('duration')}{dur}{_reset()}"
         if _log_in_tool.get():
+            label = _tool_label()
+            hint = _page_hint_suffix()
             chars_suffix = f"  {page_chars} chars" if page_chars is not None else ""
-            self.console.info(f"{pre}Page summarized  ({dur}){chars_suffix}")
+            self.console.info(
+                f"{pre}{_c('tool')}{label}{_reset()}{hint}  in {dur_colored}  {chars_suffix}"
+            )
         elif has_tool_call:
-            self.console.info(f"{pre}Agent chose tool: {tool_name}  ({dur})")
+            self.console.info(f"{pre}Agent chose tool: {tool_name}  {dur_colored}")
         else:
-            self.console.info(f"{pre}Agent  ({dur})  [{model}]")
+            self.console.info(f"{pre}Agent  {dur_colored}  {_c('model')}[{model}]{_reset()}")
 
     def llm_stream_done(self):
         pair = _llm_ctx.get()
@@ -215,11 +294,16 @@ class LilithLogger:
             elapsed = 0.0
             model = "?"
         dur = _format_duration(elapsed)
-        self.console.info(f"{self._prefix()}Agent  ({dur})  [{model}]")
+        dur_colored = f"{_c('duration')}{dur}{_reset()}"
+        self.console.info(f"{self._prefix()}Agent  took {dur_colored}  {_c('model')}[{model}]{_reset()}")
     
     def tool_execute(self, tool_name: str, args: dict):
         _log_tool_start.set(time.monotonic())
         _log_in_tool.set(True)
+        _log_tool_name.set(tool_name)
+        _log_tool_step.set(None)
+        _log_page_index.set(None)
+        _log_page_hint.set(None)
         event = LogEvent(
             event_type="TOOL_EXECUTE",
             timestamp=self._timestamp(),
@@ -227,13 +311,16 @@ class LilithLogger:
         )
         self.log_event(event)
         short_args = self._format_tool_args(args)
-        self.console.info(f"{self._prefix()}Run  {tool_name}({short_args})")
+        self.console.info(
+            f"{self._prefix()}{_c('run')}▶ Run{_reset()}  {_c('tool')}{tool_name}{_reset()}({short_args})"
+        )
 
     def tool_page_fetched(self, duration_seconds: float):
         if not _log_in_tool.get():
             return
         dur = _format_duration(duration_seconds)
-        self.console.info(f"{self._prefix()}Fetched  ({dur})")
+        hint = _page_hint_suffix()
+        self.console.info(f"{self._prefix()}Fetched  ({dur}){hint}")
 
     def tool_result(
         self,
@@ -246,6 +333,10 @@ class LilithLogger:
         # Use tool-level prefix for the Done line before clearing _log_in_tool
         done_prefix = self._prefix()
         _log_in_tool.set(False)
+        _log_tool_name.set(None)
+        _log_tool_step.set(None)
+        _log_page_index.set(None)
+        _log_page_hint.set(None)
         start = _log_tool_start.get()
         _log_tool_start.set(None)
         elapsed = (time.monotonic() - start) if start is not None else 0.0
@@ -260,11 +351,17 @@ class LilithLogger:
         event = LogEvent(event_type="TOOL_RESULT", timestamp=self._timestamp(), data=data)
         self.log_event(event)
         dur = _format_duration(elapsed)
+        dur_colored = f"{_c('duration')}{dur}{_reset()}"
         if success:
             status = "ok"
+            status_str = f"{_c('done_ok')}[ok]{_reset()}"
         else:
             status = f"failed: {_short_reason(error_reason)}" if error_reason else "failed"
-        self.console.info(f"{done_prefix}Done  {tool_name}  {result_length} chars  ({dur})  [{status}]")
+            status_str = f"{_c('done_fail')}[failed]{_reset()}"
+        self.console.info(
+            f"{done_prefix}{_c('done_ok')}✓ Done{_reset()}  {_c('tool')}{tool_name}{_reset()}  "
+            f"total {dur_colored}  {result_length} chars  {status_str}"
+        )
         self.console.info("")
     
     def final_response(self, response: str):
@@ -274,12 +371,29 @@ class LilithLogger:
             data={"response": response[:500], "length": len(response)}
         )
         self.log_event(event)
-        first_line = (response.split("\n")[0] or "").strip()
-        if len(first_line) > 80:
-            first_line = first_line[:77].rstrip() + "..."
-        elif len(response.strip()) > len(first_line):
-            first_line = first_line + "..."
-        self.console.info(f"{self._prefix()}Reply: {first_line or '(empty)'}")
+        text = response.strip().replace("\n", " ")
+        preview_len = 90
+        if len(text) <= preview_len:
+            preview = text or "(empty)"
+        else:
+            start = 0
+            while start < len(text) and not text[start].isalnum():
+                start += 1
+            if start < len(text):
+                first_space = text.find(" ", start)
+                if first_space != -1 and first_space - start <= 2:
+                    start = first_space + 1
+                    while start < len(text) and not text[start].isalnum():
+                        start += 1
+            preview = text[start : start + preview_len].rstrip()
+            if len(preview) < 20:
+                preview = text[:preview_len].rstrip()
+            if len(text) > start + len(preview):
+                preview = preview + "..."
+        length_note = f" ({len(response)} chars)" if len(response) > 80 else ""
+        self.console.info(
+            f"{self._prefix()}{_c('reply')}Reply{length_note}: {preview}{_reset()}"
+        )
         _log_in_turn.set(False)
         self.console.info(_TURN_SEP)
 

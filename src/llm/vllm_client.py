@@ -1,13 +1,16 @@
 """vLLM client: OpenAI-compatible completions for local inference."""
 
-import httpx
+import json
+import re
 from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
 from src.core.config import config
 from src.core.logger import logger
 from src.llm.formatters import get_formatter
-import re
-import json
-from typing import Any
+from src.observability import trace
 
 
 @dataclass
@@ -45,58 +48,81 @@ class VLLMClient:
             "temperature": temperature,
             "stream": stream,
         }
-        
         if stop:
             payload["stop"] = stop
-        
+
         if stream:
+            async with trace(
+                "vllm_generate",
+                "llm",
+                inputs={
+                    "model": self.model,
+                    "prompt_preview": prompt[-500:] if len(prompt) > 500 else prompt,
+                    "stream": True,
+                },
+                metadata={"provider": "vllm"},
+            ) as run:
+                run.end(outputs={"streamed": True})
             return self._generate_stream(prompt, payload)
 
-        try:
-            response = await self.client.post(
-                f"{self.base_url}/v1/completions",
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-            data = response.json()
-            generated_text = data["choices"][0]["text"]
-            tokens_used = data.get("usage", {}).get("total_tokens", 0)
-            thought = ""
-            final_text = generated_text
-            thought_match = re.search(r'<(thought|think)>(.*?)</\1>', generated_text, re.DOTALL)
-            if thought_match:
-                thought = thought_match.group(2).strip()
-                final_text = generated_text.replace(thought_match.group(0), "").strip()
-            elif "Thought:" in generated_text:
-                parts = generated_text.split("Thought:", 1)[1].split("\n\n", 1)
-                if len(parts) > 1:
-                    thought = parts[0].strip()
-                    final_text = parts[1].strip()
-            logger.llm_response(
-                token_count=tokens_used,
-                has_tool_call=False,
-                tool_name=None,
-                page_chars=len(final_text),
-            )
-            
-            return LLMResponse(
-                text=final_text,
-                model=self.model,
-                thought=thought,
-                tokens_used=tokens_used
-            )
-            
-        except httpx.HTTPStatusError as e:
-            body = getattr(e.response, "text", None) or (e.response.content.decode("utf-8", errors="replace") if e.response.content else "")
-            if body:
-                logger.error(f"LLM request failed {e.response.status_code}: {body[:500]}")
-            else:
-                logger.error(f"LLM request failed: {e.response.status_code}", e)
-            raise
-        except Exception as e:
-            logger.error("LLM request failed", e)
-            raise
+        async with trace(
+            "vllm_generate",
+            "llm",
+            inputs={
+                "model": self.model,
+                "prompt_preview": prompt[-500:] if len(prompt) > 500 else prompt,
+            },
+            metadata={"provider": "vllm"},
+        ) as run:
+            try:
+                response = await self.client.post(
+                    f"{self.base_url}/v1/completions",
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                data = response.json()
+                generated_text = data["choices"][0]["text"]
+                tokens_used = data.get("usage", {}).get("total_tokens", 0)
+                thought = ""
+                final_text = generated_text
+                thought_match = re.search(r'<(thought|think)>(.*?)</\1>', generated_text, re.DOTALL)
+                if thought_match:
+                    thought = thought_match.group(2).strip()
+                    final_text = generated_text.replace(thought_match.group(0), "").strip()
+                elif "Thought:" in generated_text:
+                    parts = generated_text.split("Thought:", 1)[1].split("\n\n", 1)
+                    if len(parts) > 1:
+                        thought = parts[0].strip()
+                        final_text = parts[1].strip()
+                logger.llm_response(
+                    token_count=tokens_used,
+                    has_tool_call=False,
+                    tool_name=None,
+                    page_chars=len(final_text),
+                )
+                run.end(
+                    outputs={
+                        "text_preview": final_text[:500],
+                        "tokens_used": tokens_used,
+                    }
+                )
+                return LLMResponse(
+                    text=final_text,
+                    model=self.model,
+                    thought=thought,
+                    tokens_used=tokens_used
+                )
+            except httpx.HTTPStatusError as e:
+                body = getattr(e.response, "text", None) or (e.response.content.decode("utf-8", errors="replace") if e.response.content else "")
+                if body:
+                    logger.error(f"LLM request failed {e.response.status_code}: {body[:500]}")
+                else:
+                    logger.error(f"LLM request failed: {e.response.status_code}", e)
+                raise
+            except Exception as e:
+                logger.error("LLM request failed", e)
+                raise
 
     async def _generate_stream(self, prompt: str, payload: dict):
         async with self.client.stream(

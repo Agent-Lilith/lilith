@@ -24,6 +24,7 @@ NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 from src.core.config import config
 from src.core.logger import logger
 from src.llm.openrouter_client import OpenRouterClient
+from src.observability import trace
 from src.utils.confirm import get_confirmation_result
 from src.utils.stt import stt_client
 
@@ -388,7 +389,15 @@ async def _process_agent_chat(
             logger.error(f"Error in on_event: {e}")
 
     try:
-        result = await agent.chat(user_text, on_event=on_event, llm_client_override=llm_client_override)
+        async with trace(
+            "Lilith Chat",
+            "chain",
+            inputs={"user_message": user_text[:500]},
+            metadata={"interface": "telegram", "user_id": user_id},
+        ) as run:
+            result = await agent.chat(user_text, on_event=on_event, llm_client_override=llm_client_override)
+            response = result.response if isinstance(result, ChatResult) else result
+            run.end(outputs={"response_preview": (response or "")[:500]})
         response = result.response if isinstance(result, ChatResult) else result
 
         if llm_client_override:
