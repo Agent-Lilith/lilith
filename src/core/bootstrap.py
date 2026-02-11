@@ -20,6 +20,7 @@ from src.orchestrators.search.backends import (
     EmailSearchBackend,
     CalendarSearchBackend,
     TasksSearchBackend,
+    BrowserSearchBackend,
 )
 from src.tools.universal_search import UniversalSearchTool
 
@@ -44,6 +45,17 @@ def setup_tools() -> ToolRegistry:
             return await mcp_client.call_tool(name, args)
 
         search_backends.append(EmailSearchBackend(mcp_call_tool=mcp_call))
+
+    if config.mcp_browser_command:
+        from src.mcp.client import MCPClient
+
+        mcp_browser_client = MCPClient(config.mcp_browser_command, config.mcp_browser_args)
+
+        async def mcp_browser_call(name: str, args: dict):
+            return await mcp_browser_client.call_tool(name, args)
+
+        search_backends.append(BrowserSearchBackend(mcp_call_tool=mcp_browser_call))
+        logger.info(f"Browser search backend registered (MCP: {config.mcp_browser_command})")
 
     orchestrator = UniversalSearchOrchestrator(tools=search_backends, max_refinement_rounds=1)
     registry.register(UniversalSearchTool(orchestrator))

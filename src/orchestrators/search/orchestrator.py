@@ -118,6 +118,7 @@ class UniversalSearchOrchestrator:
                     "entities": [],
                     "temporal": None,
                     "source_hints": [],
+                    "scope": "multiple",
                     "ambiguities": [],
                 },
             )
@@ -134,10 +135,13 @@ class UniversalSearchOrchestrator:
             for name in ("calendar", "tasks", "email"):
                 if name in scores:
                     scores[name] = 0.0
-        selected = [n for n, s in scores.items() if s > 0.6]
-        if not selected:
-            ordered = sorted(scores.items(), key=lambda x: -x[1])
-            selected = [n for n, _ in ordered[:2]]
+        if intent.get("scope") == "single" and scores:
+            selected = [max(scores, key=scores.get)]
+        else:
+            selected = [n for n, s in scores.items() if s > 0.6]
+            if not selected:
+                ordered = sorted(scores.items(), key=lambda x: -x[1])
+                selected = [n for n, _ in ordered[:2]]
         logger.debug(f"Universal search selected tools: {selected} (scores: {scores})")
         return selected
 
@@ -168,7 +172,11 @@ class UniversalSearchOrchestrator:
             tool = step.get("tool")
             if tool not in self._tools:
                 continue
-            q = str(step.get("query", default_query)).strip() or default_query
+            raw_q = step.get("query")
+            if raw_q is not None and str(raw_q).strip() == "":
+                q = ""
+            else:
+                q = str(step.get("query", default_query)).strip() or default_query
             validated.append({
                 "tool": tool,
                 "query": q,
@@ -238,7 +246,11 @@ class UniversalSearchOrchestrator:
             tool = step.get("tool")
             if tool not in self._tools:
                 continue
-            q = str(step.get("query", default_query)).strip() or default_query
+            raw_q = step.get("query")
+            if raw_q is not None and str(raw_q).strip() == "":
+                q = ""
+            else:
+                q = str(step.get("query", default_query)).strip() or default_query
             validated.append({
                 "tool": tool,
                 "query": q,

@@ -9,6 +9,7 @@ Current result summaries (first 15):
 Previous search steps (already run): {previous_steps}
 
 Suggest 0-4 additional search steps to improve coverage or narrow down. Use different queries or filters.
+Do not fill "query" when only time/scope is needed; use filters for time/history instead.
 Return a JSON array of steps: [{"tool": "...", "query": "...", "filters": {}}, ...]
 If no refinement is needed, return [].
 
