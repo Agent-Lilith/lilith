@@ -1,6 +1,6 @@
 ## Description
 
-Use when the user wants to search or asks about: **sites they visited**, **latest/recent websites**, **browser history**, **saved bookmarks** — or general search across web, email, calendar, tasks. Call this tool; the system injects the conversation so the right sources (including browser when configured) are queried. Optional: max_results to limit results.
+Use when the user wants to search or asks about: **sites they visited**, **latest/recent websites**, **browser history**, **saved bookmarks**, **whatsapp messages**, **whatsapp chats** — or general search across web, email, calendar, tasks. Call this tool; the system injects the conversation so the right sources are queried. **Results include unique IDs; use these IDs when calling other tools like `calendar_read` or `calendar_write` to reference specific items.** Optional: max_results to limit results.
 
 ## Examples
 

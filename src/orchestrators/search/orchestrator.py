@@ -207,32 +207,39 @@ class UniversalSearchOrchestrator:
     ) -> tuple[bool, str]:
         """Deterministic refinement triggers. Returns (should_refine, reason)."""
         if not results:
-            # Explicit temporal + simple query = no refinement, just report empty.
-            # When a user asks "what did I visit yesterday?" and there's no data,
-            # widening to other dates is harmful — just say no data found.
-            temporal = intent.get("temporal")
+            # Explicit filters + simple query = no refinement, just report empty.
+            has_filters = any(d.filters for d in routing_plan_decisions)
             complexity = intent.get("complexity", "simple")
-            if temporal and complexity in ("simple", None):
-                logger.info(
-                    "Skipping refinement: explicit temporal=%s with no results",
-                    temporal,
-                )
+            if has_filters and complexity in ("simple", None):
                 return False, ""
             return True, "no_results"
 
-        # Low coverage: expected multiple sources but got results from fewer
-        expected_sources = {d.source for d in routing_plan_decisions}
-        actual_sources = {r.source for r in results}
-        if len(expected_sources) > 1 and len(actual_sources) < len(expected_sources) * 0.5:
-            return True, "low_source_coverage"
+        # Trigger 1: Too few results (low recall)
+        if len(results) < 3:
+            return True, "low_coverage"
 
-        # Low confidence: all scores below threshold
-        max_score = max(
-            (max(r.scores.values()) if r.scores else 0.0)
-            for r in results
-        )
-        if max_score < 0.3:
-            return True, "low_confidence"
+        # Trigger 2: Low confidence scores (avg score < 0.7)
+        # Note: SearchResultV1 stores dict of scores, we take the max score for that result
+        scores = []
+        for r in results:
+            if r.scores:
+                scores.append(max(r.scores.values()))
+            else:
+                scores.append(0.0)
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        if avg_score < 0.7:
+             return True, "low_confidence"
+
+        # Trigger 3: Only one source returned results (missing cross-source context)
+        # Check if intent implies multiple sources (e.g. source_hints has >1 item)
+        sources = {r.source for r in results}
+        hints = intent.get("source_hints", [])
+        if len(sources) == 1 and len(hints) > 1:
+            return True, "single_source"
+
+        # Trigger 4: Results contradict each other (placeholder for now)
+        # if self._detect_contradictions(results):
+        #    return True, "contradiction"
 
         return False, ""
 
@@ -249,15 +256,19 @@ class UniversalSearchOrchestrator:
         refined: list[RoutingDecision] = []
 
         if reason == "no_results":
-            # Broaden: retry all sources with just vector search and no filters
+            # Broaden: retry all sources with vector + structured search and no filters
             for d in previous_decisions:
-                if d.query.strip():
-                    refined.append(RoutingDecision(
-                        source=d.source,
-                        methods=["vector"],
-                        query=d.query,
-                        filters=[],  # drop all filters
-                    ))
+                # Include structured to get latest items even if query doesn't match semantically
+                methods = ["vector"]
+                if self._capabilities.can_handle(d.source, "structured"):
+                    methods.append("structured")
+                
+                refined.append(RoutingDecision(
+                    source=d.source,
+                    methods=methods,
+                    query=d.query,
+                    filters=[],  # drop all filters
+                ))
 
         elif reason == "low_source_coverage":
             # Retry missing sources
@@ -379,10 +390,11 @@ class UniversalSearchOrchestrator:
                     all_results, intent, routing_plan.decisions,
                 )
                 if not should_refine:
-                    # Note when we have explicit temporal with no results
-                    temporal = intent.get("temporal")
-                    if not all_results and temporal:
-                        notes.append(f"No data found for the requested time period ({temporal}).")
+                    # Note when we have explicit filters with no results
+                    if not all_results:
+                        has_filters = any(d.filters for d in routing_plan.decisions)
+                        if has_filters:
+                            notes.append("No data found for the requested criteria.")
                     break
 
                 iterations += 1

@@ -56,6 +56,11 @@ def _format_response(response: UniversalSearchResponse) -> str:
 
             line = f"{i}. [{r.source}] \"{r.title}\"{detail}{visits}{ts} | score:{best_score:.2f}"
             parts.append(line)
+            # Include snippet (message body) when available and different from title
+            if r.snippet and r.snippet.strip() and r.snippet.strip() != r.title.strip():
+                snippet_text = r.snippet[:200].replace("\n", " ").strip()
+                if snippet_text:
+                    parts.append(f"   {snippet_text}")
     elif not response.notes:
         parts.append("No results found.")
 
@@ -67,6 +72,10 @@ class UniversalSearchTool(Tool):
 
     def __init__(self, orchestrator: UniversalSearchOrchestrator):
         self._orchestrator = orchestrator
+
+    @property
+    def orchestrator(self) -> UniversalSearchOrchestrator:
+        return self._orchestrator
 
     @property
     def name(self) -> str:

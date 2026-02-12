@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from typing import Callable
 
 import asyncio
 import re
@@ -65,7 +66,7 @@ class Agent:
             tool_registry=tool_registry
         )
     
-    async def chat(self, user_input: str, on_event: callable = None, llm_client_override=None) -> ChatResult:
+    async def chat(self, user_input: str, on_event: Callable | None = None, llm_client_override=None) -> ChatResult:
         client = llm_client_override or self.llm_client
         token = current_llm_client.set(client)
         try:
@@ -80,7 +81,7 @@ class Agent:
         full_thought: str,
         is_thinking: bool,
         thought_tag_found: bool,
-        on_event: callable | None,
+        on_event: Callable | None,
     ) -> tuple[str, str, bool, bool]:
         response_text = response_text + chunk
 
@@ -135,7 +136,7 @@ class Agent:
             clean_response = (before_stripped + "\n\n" + response_after).strip() if response_after else before_stripped
         return full_thought, clean_response
 
-    async def _chat_impl(self, user_input: str, on_event: callable, client) -> ChatResult:
+    async def _chat_impl(self, user_input: str, on_event: Callable | None, client) -> ChatResult:
         if user_input:
             logger.user_input(user_input)
             self.conversation.append(Message(role="user", content=user_input))
@@ -271,7 +272,7 @@ class Agent:
         tool_name: str,
         args: dict,
         assistant_content: str,
-        on_event: callable,
+        on_event: Callable,
     ) -> None:
         self.conversation.append(Message(role="assistant", content=assistant_content))
         if on_event:

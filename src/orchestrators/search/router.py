@@ -7,9 +7,12 @@ capability-driven routing that respects what each server actually supports.
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from src.contracts.mcp_search_v1 import RetrievalMethod, SourceClass
+from src.core.config import config
 from src.orchestrators.search.capabilities import CapabilityRegistry
 
 logger = logging.getLogger(__name__)
@@ -56,6 +59,9 @@ _SOURCE_HINTS: dict[str, list[str]] = {
     "search": ["web"],
     "news": ["web"],
     "latest": ["web"],
+    "whatsapp": ["whatsapp_messages"],
+    "chat": ["whatsapp_messages"],
+    "message": ["email", "whatsapp_messages"],
 }
 
 # Filter-related patterns
@@ -67,7 +73,7 @@ _FILTER_PATTERNS: dict[str, re.Pattern] = {
 }
 
 # Temporal keywords that suggest structured search
-_TEMPORAL_KEYWORDS = {"today", "yesterday", "this week", "last week", "this month", "last month", "recent", "recently"}
+_TEMPORAL_KEYWORDS = {"today", "yesterday", "this week", "last week", "this month", "last month", "recent", "recently", "latest", "most recent"}
 
 # Relationship keywords that suggest complex queries
 _RELATIONSHIP_KEYWORDS = {"between", "related to", "about the same", "thread", "conversation", "regarding"}
@@ -197,10 +203,7 @@ class RetrievalRouter:
         temporal = intent.get("temporal")
         if temporal:
             temporal_str = str(temporal).lower().strip()
-            from datetime import datetime, timedelta
-            from zoneinfo import ZoneInfo
-            from src.core.config import config
-
+            
             tz_name = config.user_timezone or "UTC"
             try:
                 tz = ZoneInfo(tz_name)
@@ -219,7 +222,7 @@ class RetrievalRouter:
             elif temporal_str in ("this month", "last month"):
                 days = 30 if temporal_str == "this month" else 60
                 filters.append({"field": "date_after", "operator": "gte", "value": (now - timedelta(days=days)).date().isoformat()})
-            elif temporal_str in ("recent", "recently"):
+            elif temporal_str in ("recent", "recently", "latest", "most recent"):
                 filters.append({"field": "date_after", "operator": "gte", "value": (now - timedelta(days=30)).date().isoformat()})
 
         # From regex patterns in query
@@ -250,9 +253,13 @@ class RetrievalRouter:
         supported = [str(m) for m in caps.supported_methods]
         has_filters = bool(filters)
         has_query = bool(query and query.strip())
+        query_lower = query.lower()
 
-        # Structured-first: always include structured when we have filters
-        if has_filters and "structured" in supported:
+        has_temporal = bool(intent.get("temporal"))
+        is_broad = any(kw in query_lower for kw in ("anything", "all", "latest", "recent", "everything", "any"))
+        
+        # Structured-first: always include structured when we have filters, temporal intent, or broad query
+        if (has_filters or has_temporal or is_broad) and "structured" in supported:
             methods.append("structured")
 
         # Fulltext: when we have a text query with concrete keywords

@@ -6,7 +6,7 @@ from typing import Any
 from src.core.config import config
 from src.core.logger import logger
 from src.core.prompts import get_tool_description, get_tool_examples
-from src.mcp.client import MCPClient
+from src.mcp_client.client import MCPClient
 from src.tools.base import Tool, ToolResult
 
 MCP_EMAIL_GET = "email_get"

@@ -93,7 +93,7 @@ async def setup_tools() -> ToolRegistry:
     # MCP Email connection
     mcp_email_client = None
     if config.mcp_email_command:
-        from src.mcp.client import MCPClient
+        from src.mcp_client.client import MCPClient
 
         mcp_email_client = MCPClient(config.mcp_email_command, config.mcp_email_args)
 
@@ -126,7 +126,7 @@ async def setup_tools() -> ToolRegistry:
     # MCP Browser connection
     mcp_browser_client = None
     if config.mcp_browser_command:
-        from src.mcp.client import MCPClient
+        from src.mcp_client.client import MCPClient
 
         mcp_browser_client = MCPClient(config.mcp_browser_command, config.mcp_browser_args)
 
@@ -164,7 +164,7 @@ async def setup_tools() -> ToolRegistry:
 
     # MCP WhatsApp connection
     if config.mcp_whatsapp_command:
-        from src.mcp.client import MCPClient
+        from src.mcp_client.client import MCPClient
 
         mcp_whatsapp_client = MCPClient(config.mcp_whatsapp_command, config.mcp_whatsapp_args)
 

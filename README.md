@@ -30,6 +30,15 @@ python -m src.main cli
 | `/quit` | Exit Lilith |
 | `Ctrl+C` | Interrupt / Exit |
 
+## Testing
+
+```bash
+uv sync --extra dev   # install dev deps (pytest, pytest-asyncio)
+uv run pytest         # run all tests
+uv run pytest tests/unit -v   # unit tests only
+uv run pytest tests/e2e -v    # e2e tests only
+```
+
 ## Prompts
 
 All prompt text lives under `prompts/`. Edit `prompts/soul.md` to customize Lilith's personality.

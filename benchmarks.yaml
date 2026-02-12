@@ -1,0 +1,15 @@
+# Benchmark Test Cases for Lilith Search
+# Run: python -m src.eval.benchmark --config benchmarks.yaml
+# Each entry is a query plus expected results; the runner checks that the orchestrator
+# returns results from the right sources and (optionally) that top results match expected items.
+
+- query: "Emails from Sarah about budget"
+  expected_sources: ["gmail"]
+  expected_top_3:
+    - source: "gmail"
+      from: "sarah"
+  precision_threshold: 0.5
+
+- query: "What did I work on last Tuesday?"
+  expected_sources: ["gmail", "browser_history"] 
+  # Note: "git" might be added later if implemented
