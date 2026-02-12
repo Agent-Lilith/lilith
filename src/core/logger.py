@@ -456,7 +456,7 @@ class LilithLogger:
         
         self.console.warning(f"☁️ EXTERNAL: {provider}/{model} → logged to {payload_file.name}")
     
-    def error(self, message: str, exception: Exception = None, **kwargs):
+    def error(self, message: str, *args, exception: Exception | None = None, **kwargs):
         event = LogEvent(
             event_type="ERROR",
             timestamp=self._timestamp(),
@@ -466,36 +466,52 @@ class LilithLogger:
             }
         )
         self.log_event(event)
-        self.console.error(f"❌ Error: {message}", **kwargs)
-    
-    def info(self, message: str):
-        self.console.info(message)
 
-    def warning(self, message: str, **kwargs):
+        # Filter kwargs for standard logger
+        allowed = {"exc_info", "stack_info", "stacklevel", "extra"}
+        log_kwargs = {k: v for k, v in kwargs.items() if k in allowed}
+        if exception and "exc_info" not in log_kwargs:
+            log_kwargs["exc_info"] = exception
+
+        self.console.error(f"❌ Error: {message}", *args, **log_kwargs)
+
+    def info(self, message: str, *args, **kwargs):
+        allowed = {"exc_info", "stack_info", "stacklevel", "extra"}
+        log_kwargs = {k: v for k, v in kwargs.items() if k in allowed}
+        self.console.info(message, *args, **log_kwargs)
+
+    def warning(self, message: str, *args, **kwargs):
         event = LogEvent(
             event_type="WARNING",
             timestamp=self._timestamp(),
             data={"message": message[:500]}
         )
         self.log_event(event)
-        self.console.warning(f"⚠️ {message}", **kwargs)
+        
+        allowed = {"exc_info", "stack_info", "stacklevel", "extra"}
+        log_kwargs = {k: v for k, v in kwargs.items() if k in allowed}
+        self.console.warning(f"⚠️ {message}", *args, **log_kwargs)
 
-    def exception(self, message: str, **kwargs):
+    def exception(self, message: str, *args, **kwargs):
         event = LogEvent(
             event_type="ERROR",
             timestamp=self._timestamp(),
             data={"message": message[:500]}
         )
         self.log_event(event)
-        self.console.exception(f"❌ {message}", **kwargs)
+        self.console.exception(f"❌ {message}", *args, **kwargs)
 
-    def debug(self, message: str):
+    def debug(self, message: str, *args, **kwargs):
         event = LogEvent(
             event_type="DEBUG",
             timestamp=self._timestamp(),
             data={"message": message}
         )
         self.log_event(event)
+        
+        allowed = {"exc_info", "stack_info", "stacklevel", "extra"}
+        log_kwargs = {k: v for k, v in kwargs.items() if k in allowed}
+        self.console.debug(message, *args, **log_kwargs)
 
 
 logger = LilithLogger()

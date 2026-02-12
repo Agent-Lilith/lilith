@@ -96,6 +96,7 @@ class GoogleService:
                 logger.info("Google API token refreshed.")
             except Exception as e:
                 logger.error(f"Failed to refresh Google API token: {e}")
+                logger.error("Try re-authenticating: python -m src.main google-auth")
                 self._creds = None
         else:
             self._creds = None

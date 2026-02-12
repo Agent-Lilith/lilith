@@ -1,4 +1,4 @@
-"""Universal Search tool: single entry point for web + email (and future) search."""
+"""Universal Search tool: single entry point for multi-source hybrid search."""
 
 from src.core.prompts import get_tool_description, get_tool_examples
 from src.orchestrators.search import UniversalSearchOrchestrator
@@ -6,8 +6,64 @@ from src.orchestrators.search.models import UniversalSearchResponse
 from src.tools.base import Tool, ToolResult
 
 
+def _format_response(response: UniversalSearchResponse) -> str:
+    """Format search results in a compact, LLM-friendly text format."""
+    meta = response.meta
+    sources = ", ".join(meta.get("sources_queried", []))
+    methods = "+".join(meta.get("methods_used", []))
+    total_ms = meta.get("timing_ms", {}).get("total", 0)
+    count = len(response.results)
+
+    parts: list[str] = []
+
+    # Header
+    header = f"Search: {count} results from {sources}"
+    if methods:
+        header += f" ({methods})"
+    if total_ms:
+        header += f" [{total_ms:.0f}ms]"
+    parts.append(header)
+
+    # Notes (e.g. "No data found for yesterday")
+    for note in response.notes:
+        parts.append(f"⚠ {note}")
+
+    # Errors
+    for err in response.errors:
+        parts.append(f"⚠ {err}")
+
+    # Results
+    if response.results:
+        parts.append("")
+        for i, r in enumerate(response.results, 1):
+            # Score: best method score
+            best_score = max(r.scores.values()) if r.scores else 0.0
+            # Timestamp
+            ts = ""
+            if r.timestamp:
+                ts_str = r.timestamp[:10] if len(r.timestamp) >= 10 else r.timestamp
+                ts = f" | {ts_str}"
+            # Domain/sender info from metadata
+            detail = ""
+            if r.metadata.get("domain"):
+                detail = f" | {r.metadata['domain']}"
+            elif r.metadata.get("from"):
+                detail = f" | from {r.metadata['from']}"
+            # Visit count for browser
+            visits = ""
+            if r.metadata.get("visit_count") and r.metadata["visit_count"] > 1:
+                visits = f" | {r.metadata['visit_count']} visits"
+
+            line = f"{i}. [{r.source}] \"{r.title}\"{detail}{visits}{ts} | score:{best_score:.2f}"
+            parts.append(line)
+    elif not response.notes:
+        parts.append("No results found.")
+
+    return "\n".join(parts)
+
+
 class UniversalSearchTool(Tool):
-    """One search tool. The agent only invokes it; full context is injected by the framework."""
+    """One search tool. The agent invokes it; full context is injected by the framework."""
 
     def __init__(self, orchestrator: UniversalSearchOrchestrator):
         self._orchestrator = orchestrator
@@ -54,7 +110,6 @@ class UniversalSearchTool(Tool):
         except Exception:
             max_val = 20
 
-        logger.tool_execute(self.name, {"max_results": max_val})
         try:
             response: UniversalSearchResponse = await self._orchestrator.search(
                 conversation_context=(conversation_context or "").strip(),
@@ -63,9 +118,9 @@ class UniversalSearchTool(Tool):
                 do_refinement=True,
             )
         except Exception as e:
-            logger.tool_result(self.name, 0, False)
+            logger.error("Universal search failed: %s", e, exc_info=True)
             return ToolResult.fail(f"Universal search failed: {e!s}")
 
-        out = response.model_dump_json(indent=2)
-        logger.tool_result(self.name, len(out), True)
+        out = _format_response(response)
         return ToolResult.ok(out)
+

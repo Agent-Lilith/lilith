@@ -1,43 +1,42 @@
-"""Tasks search backend: list_tasks via Google Tasks, same logic as TasksReadTool."""
+"""Tasks search backend: Google Tasks API. Returns SearchResultV1."""
 
 import asyncio
 from typing import Any
 
-from src.orchestrators.search.interface import SearchTool
-from src.orchestrators.search.models import SearchResult
+from src.contracts.mcp_search_v1 import SearchResultV1, SourceClass
+from src.orchestrators.search.interface import SearchBackend
 
 
-class TasksSearchBackend(SearchTool):
+class TasksSearchBackend(SearchBackend):
     def __init__(self, google_service: Any):
         self._service = google_service
 
     async def search(
         self,
         query: str,
+        methods: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
         top_k: int = 10,
-        filters: dict[str, Any] | None = None,
-    ) -> list[SearchResult]:
+    ) -> list[SearchResultV1]:
         if not self._service.is_connected:
             return []
-        f = filters or {}
-        list_id = (f.get("list_id") or "").strip()
-        show_completed = f.get("show_completed")
-        if show_completed is None:
-            show_completed = True
+
+        f_dict = {fc["field"]: fc["value"] for fc in (filters or []) if "field" in fc and "value" in fc}
+        list_id = f_dict.get("list_id", "")
+        show_completed = f_dict.get("show_completed", True)
         query_lower = (query or "").lower().split()
 
-        def _sync_list_tasks() -> list[SearchResult]:
+        def _sync_list_tasks() -> list[SearchResultV1]:
             lid = self._service.get_task_list_id(list_id or None)
             tasks_result = self._service.tasks.tasks().list(
                 tasklist=lid,
                 showCompleted=bool(show_completed),
             ).execute()
             raw = tasks_result.get("items", [])
-            # Optional: filter by query words in title/notes
+
             if query_lower:
                 filtered = [
-                    t
-                    for t in raw
+                    t for t in raw
                     if any(
                         q in ((t.get("title") or "") + " " + (t.get("notes") or "")).lower()
                         for q in query_lower
@@ -47,42 +46,51 @@ class TasksSearchBackend(SearchTool):
                     filtered = raw
             else:
                 filtered = raw
-            out: list[SearchResult] = []
+
+            results: list[SearchResultV1] = []
             for i, task in enumerate(filtered[:top_k]):
                 title = task.get("title") or "(No title)"
                 notes = (task.get("notes") or "")[:200]
-                content = f"{title} | due={task.get('due', '')} | status={task.get('status', 'needsAction')}"
+                status = task.get("status", "needsAction")
+                due = task.get("due", "")
+                content = f"{title} | due={due} | status={status}"
                 if notes:
                     content += f"\n{notes}"
-                ts = task.get("due")
-                score = 1.0 - (i * 0.04)
-                if score < 0.3:
-                    score = 0.3
-                out.append(
-                    SearchResult(
-                        content=content,
-                        source="tasks",
-                        title=title,
-                        timestamp=ts,
-                        metadata={
-                            "task_id": task.get("id"),
-                            "list_id": lid,
-                            "due": task.get("due"),
-                            "status": task.get("status", "needsAction"),
-                        },
-                        relevance_score=score,
-                    )
-                )
-            return out
+                score = max(0.3, 1.0 - (i * 0.04))
+
+                results.append(SearchResultV1(
+                    id=task.get("id", f"task_{i}"),
+                    source="tasks",
+                    source_class=SourceClass.PERSONAL,
+                    title=title,
+                    snippet=content,
+                    timestamp=due if due else None,
+                    scores={"structured": score},
+                    methods_used=["structured"],
+                    metadata={
+                        "task_id": task.get("id"),
+                        "list_id": lid,
+                        "due": due,
+                        "status": status,
+                        "notes": notes,
+                    },
+                    provenance=f"task: {title[:50]}",
+                ))
+            return results
 
         return await asyncio.to_thread(_sync_list_tasks)
 
     def get_source_name(self) -> str:
         return "tasks"
 
-    def can_handle_query(self, query: str, intent: dict[str, Any]) -> float:
-        query_lower = query.lower()
-        strong = ["task", "tasks", "todo", "todos", "to-do", "to do", "reminder", "due"]
-        if any(w in query_lower for w in strong):
-            return 0.9
-        return 0.3
+    def get_source_class(self) -> SourceClass:
+        return SourceClass.PERSONAL
+
+    def get_supported_methods(self) -> list[str]:
+        return ["structured"]
+
+    def get_supported_filters(self) -> list[dict[str, Any]]:
+        return [
+            {"name": "list_id", "type": "string", "operators": ["eq"], "description": "Google Tasks list ID"},
+            {"name": "show_completed", "type": "boolean", "operators": ["eq"], "description": "Include completed tasks"},
+        ]

@@ -1,17 +1,33 @@
-"""Universal Search orchestrator: intent, plan, execute, refine, rerank."""
+"""Universal Search orchestrator: capability-driven routing, hybrid retrieval, weighted fusion.
+
+Pipeline:
+  1. Intent extraction (LLM)
+  2. Deterministic routing (router selects sources + methods based on capabilities)
+  3. Complexity gate (simple -> skip LLM planning; complex -> LLM plan + confirm)
+  4. Dispatch to MCP servers and direct backends
+  5. Weighted fusion ranking
+  6. Metric-driven refinement (deterministic triggers, optional LLM assist)
+  7. Return ranked results
+"""
 
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
+from src.contracts.mcp_search_v1 import SearchResultV1, SourceClass
 from src.core.logger import logger
 from src.core.prompts import load_search_prompt
 from src.core.worker import current_llm_client
 from src.llm.vllm_client import create_client
 from src.observability import traceable
-from src.orchestrators.search.interface import SearchTool
-from src.orchestrators.search.models import SearchResult, SearchResultItem, UniversalSearchResponse
+from src.orchestrators.search.capabilities import CapabilityRegistry
+from src.orchestrators.search.dispatcher import MCPSearchDispatcher
+from src.orchestrators.search.fusion import WeightedFusionRanker
+from src.orchestrators.search.interface import SearchBackend
+from src.orchestrators.search.models import UniversalSearchResponse
+from src.orchestrators.search.router import RetrievalRouter, RoutingDecision
 
 
 def _extract_json(text: str) -> str:
@@ -34,59 +50,38 @@ def _parse_json_object(text: str, default: dict[str, Any]) -> dict[str, Any]:
         return default
 
 
-def _parse_json_array(text: str, default: list[Any]) -> list[Any]:
-    try:
-        cleaned = _extract_json(text)
-        cleaned = re.sub(r",\s*}", "}", cleaned)
-        cleaned = re.sub(r",\s*]", "]", cleaned)
-        out = json.loads(cleaned)
-        return out if isinstance(out, list) else default
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
 def _default_query_from_context(context: str) -> str:
     if not context or not context.strip():
-        return "search"
+        return ""
     first_line = context.strip().split("\n")[0].strip()
     if not first_line:
-        return "search"
+        return ""
     for prefix in ("User:", "Assistant:", "user:", "assistant:"):
         if first_line.startswith(prefix):
             first_line = first_line[len(prefix):].strip()
             break
-    return first_line[:200] if first_line else "search"
-
-
-def _query_terms(text: str) -> set[str]:
-    if not text or not text.strip():
-        return set()
-    normalized = re.sub(r"[^\w\s]", " ", text.lower())
-    return {w for w in normalized.split() if len(w) > 1}
-
-
-def _fallback_rerank(results: list[SearchResult], context: str) -> list[SearchResult]:
-    query = _default_query_from_context(context)
-    terms = _query_terms(query)
-    if not terms:
-        return sorted(results, key=lambda r: -r.relevance_score)
-
-    def key(r: SearchResult) -> tuple[float, int]:
-        text = (r.title or "") + " " + (r.content or "")
-        overlap = sum(1 for t in terms if t in text.lower())
-        return (-r.relevance_score, -overlap)
-
-    return sorted(results, key=key)
+    return first_line[:200] if first_line else ""
 
 
 class UniversalSearchOrchestrator:
-    def __init__(self, tools: list[SearchTool], max_refinement_rounds: int = 1):
-        self._tools = {t.get_source_name(): t for t in tools}
+    """Capability-driven search orchestrator with hybrid retrieval and weighted fusion."""
+
+    def __init__(
+        self,
+        capabilities: CapabilityRegistry,
+        dispatcher: MCPSearchDispatcher,
+        direct_backends: list[SearchBackend],
+        max_refinement_rounds: int = 1,
+    ):
+        self._capabilities = capabilities
+        self._dispatcher = dispatcher
+        self._direct_backends = {b.get_source_name(): b for b in direct_backends}
+        self._router = RetrievalRouter(capabilities)
+        self._fusion = WeightedFusionRanker()
         self._max_refinement_rounds = max(0, max_refinement_rounds)
         self._prompt_intent = load_search_prompt("intent")
         self._prompt_plan = load_search_prompt("plan")
         self._prompt_refine = load_search_prompt("refine")
-        self._prompt_rerank = load_search_prompt("rerank")
 
     def _get_llm(self):
         client = current_llm_client.get()
@@ -106,11 +101,13 @@ class UniversalSearchOrchestrator:
         )
         return (getattr(response, "text", None) or str(response)).strip()
 
+    @traceable(name="search_intent_analysis", run_type="chain")
     async def _analyze_intent(self, context: str) -> dict[str, Any]:
+        """Extract structured intent from conversation context."""
         prompt = self._prompt_intent.replace("{context}", context)
         logger.set_tool_step("intent")
         try:
-            raw = await self._generate(prompt, max_tokens=400)
+            raw = await self._generate(prompt, max_tokens=500)
             return _parse_json_object(
                 raw,
                 {
@@ -118,192 +115,183 @@ class UniversalSearchOrchestrator:
                     "entities": [],
                     "temporal": None,
                     "source_hints": [],
-                    "scope": "multiple",
+                    "complexity": "simple",
+                    "retrieval_hints": [],
                     "ambiguities": [],
                 },
             )
         finally:
             logger.set_tool_step(None)
 
-    def _select_tools(self, context: str, intent: dict[str, Any]) -> list[str]:
-        scores: dict[str, float] = {}
-        for name, tool in self._tools.items():
-            scores[name] = tool.can_handle_query(context, intent)
-        source_hints = (intent.get("source_hints") or []) or []
-        hints_str = " ".join(str(h).lower() for h in source_hints)
-        if "news" in hints_str or "web" in hints_str:
-            for name in ("calendar", "tasks", "email"):
-                if name in scores:
-                    scores[name] = 0.0
-        if intent.get("scope") == "single" and scores:
-            selected = [max(scores, key=scores.get)]
-        else:
-            selected = [n for n, s in scores.items() if s > 0.6]
-            if not selected:
-                ordered = sorted(scores.items(), key=lambda x: -x[1])
-                selected = [n for n, _ in ordered[:2]]
-        logger.debug(f"Universal search selected tools: {selected} (scores: {scores})")
-        return selected
-
-    async def _create_search_plan(
+    @traceable(name="search_execute_routing", run_type="chain")
+    async def _execute_routing(
         self,
-        context: str,
-        intent: dict[str, Any],
-        selected_tools: list[str],
-    ) -> list[dict[str, Any]]:
-        default_query = _default_query_from_context(context)
-        prompt = (
-            self._prompt_plan.replace("{context}", context)
-            .replace("{intent}", json.dumps(intent, indent=2))
-            .replace("{selected_tools}", ", ".join(selected_tools))
-        )
-        logger.set_tool_step("plan")
-        try:
-            raw = await self._generate(prompt, max_tokens=600)
-            plan = _parse_json_array(raw, [])
-        finally:
-            logger.set_tool_step(None)
-        if not plan:
-            plan = [{"tool": t, "query": default_query, "filters": {}} for t in selected_tools]
-        validated: list[dict[str, Any]] = []
-        for step in plan:
-            if not isinstance(step, dict):
-                continue
-            tool = step.get("tool")
-            if tool not in self._tools:
-                continue
-            raw_q = step.get("query")
-            if raw_q is not None and str(raw_q).strip() == "":
-                q = ""
-            else:
-                q = str(step.get("query", default_query)).strip() or default_query
-            validated.append({
-                "tool": tool,
-                "query": q,
-                "filters": step.get("filters") if isinstance(step.get("filters"), dict) else {},
-            })
-        if not validated:
-            validated = [{"tool": t, "query": default_query, "filters": {}} for t in selected_tools]
-        logger.debug(f"Search plan: {len(validated)} steps")
-        return validated
+        decisions: list[RoutingDecision],
+    ) -> tuple[list[SearchResultV1], list[str]]:
+        """Execute all routing decisions in parallel."""
+        tasks = []
+        for decision in decisions:
+            tasks.append(self._execute_one(decision))
 
-    async def _execute_step(self, step: dict[str, Any]) -> tuple[list[SearchResult], list[str]]:
-        tool_name = step["tool"]
-        query = step["query"]
-        filters = step.get("filters") or {}
-        tool = self._tools.get(tool_name)
-        if not tool:
-            return [], [f"Unknown tool: {tool_name}"]
-        try:
-            results = await tool.search(query, top_k=10, filters=filters)
-            return results, []
-        except Exception as e:
-            logger.warning(f"Search step failed {tool_name}: {e}")
-            return [], [f"{tool_name}: {e!s}"]
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _execute_plan(self, plan: list[dict[str, Any]]) -> tuple[list[SearchResult], list[str]]:
-        tasks = [self._execute_step(step) for step in plan]
-        out = await asyncio.gather(*tasks, return_exceptions=True)
-        all_results: list[SearchResult] = []
+        all_results: list[SearchResultV1] = []
         all_errors: list[str] = []
-        for i, result in enumerate(out):
+        for i, result in enumerate(results_list):
             if isinstance(result, Exception):
-                all_errors.append(f"Step {i + 1}: {result!s}")
+                all_errors.append(f"{decisions[i].source}: {result!s}")
+                logger.warning("Search failed for %s: %s", decisions[i].source, result)
                 continue
             results, errors = result
             all_results.extend(results)
             all_errors.extend(errors)
+
         return all_results, all_errors
 
-    async def _refine_plan(
+    async def _execute_one(
+        self,
+        decision: RoutingDecision,
+    ) -> tuple[list[SearchResultV1], list[str]]:
+        """Execute a single routing decision against either MCP or direct backend."""
+        source = decision.source
+        errors: list[str] = []
+
+        # Try MCP dispatcher first
+        if self._dispatcher.has_source(source):
+            try:
+                results = await self._dispatcher.search(
+                    source=source,
+                    query=decision.query,
+                    methods=decision.methods,
+                    filters=decision.filters,
+                    top_k=10,
+                )
+                logger.debug(
+                    "MCP search %s: %s results, methods=%s",
+                    source, len(results), decision.methods,
+                )
+                return results, errors
+            except Exception as e:
+                errors.append(f"{source}: MCP call failed: {e!s}")
+                logger.warning("MCP search failed for %s: %s", source, e)
+                return [], errors
+
+        # Try direct backend
+        backend = self._direct_backends.get(source)
+        if backend:
+            try:
+                results = await backend.search(
+                    query=decision.query,
+                    methods=decision.methods,
+                    filters=decision.filters,
+                    top_k=10,
+                )
+                logger.debug(
+                    "Direct search %s: %s results, methods=%s",
+                    source, len(results), decision.methods,
+                )
+                return results, errors
+            except Exception as e:
+                errors.append(f"{source}: {e!s}")
+                logger.warning("Direct search failed for %s: %s", source, e)
+                return [], errors
+
+        errors.append(f"No handler for source '{source}'")
+        return [], errors
+
+    def _should_refine(
+        self,
+        results: list[SearchResultV1],
+        intent: dict[str, Any],
+        routing_plan_decisions: list[RoutingDecision],
+    ) -> tuple[bool, str]:
+        """Deterministic refinement triggers. Returns (should_refine, reason)."""
+        if not results:
+            # Explicit temporal + simple query = no refinement, just report empty.
+            # When a user asks "what did I visit yesterday?" and there's no data,
+            # widening to other dates is harmful — just say no data found.
+            temporal = intent.get("temporal")
+            complexity = intent.get("complexity", "simple")
+            if temporal and complexity in ("simple", None):
+                logger.info(
+                    "Skipping refinement: explicit temporal=%s with no results",
+                    temporal,
+                )
+                return False, ""
+            return True, "no_results"
+
+        # Low coverage: expected multiple sources but got results from fewer
+        expected_sources = {d.source for d in routing_plan_decisions}
+        actual_sources = {r.source for r in results}
+        if len(expected_sources) > 1 and len(actual_sources) < len(expected_sources) * 0.5:
+            return True, "low_source_coverage"
+
+        # Low confidence: all scores below threshold
+        max_score = max(
+            (max(r.scores.values()) if r.scores else 0.0)
+            for r in results
+        )
+        if max_score < 0.3:
+            return True, "low_confidence"
+
+        return False, ""
+
+    @traceable(name="search_refinement", run_type="chain")
+    async def _refine(
         self,
         context: str,
         intent: dict[str, Any],
-        results_so_far: list[SearchResult],
-        previous_steps: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        default_query = _default_query_from_context(context)
-        summary_lines = []
-        for i, r in enumerate(results_so_far[:15]):
-            summary_lines.append(f"{i}: [{r.source}] {r.title[:60]} | {r.content[:120]}...")
-        results_summary = "\n".join(summary_lines) if summary_lines else "No results yet."
-        prompt = (
-            self._prompt_refine.replace("{context}", context)
-            .replace("{intent}", json.dumps(intent, indent=2))
-            .replace("{results_summary}", results_summary)
-            .replace("{previous_steps}", json.dumps(previous_steps[:10]))
-        )
-        logger.set_tool_step("refine")
-        try:
-            raw = await self._generate(prompt, max_tokens=400)
-            plan = _parse_json_array(raw, [])
-        finally:
-            logger.set_tool_step(None)
-        validated: list[dict[str, Any]] = []
-        for step in plan:
-            if not isinstance(step, dict):
-                continue
-            tool = step.get("tool")
-            if tool not in self._tools:
-                continue
-            raw_q = step.get("query")
-            if raw_q is not None and str(raw_q).strip() == "":
-                q = ""
-            else:
-                q = str(step.get("query", default_query)).strip() or default_query
-            validated.append({
-                "tool": tool,
-                "query": q,
-                "filters": step.get("filters") if isinstance(step.get("filters"), dict) else {},
-            })
-        return validated[:4]
+        results: list[SearchResultV1],
+        previous_decisions: list[RoutingDecision],
+        reason: str,
+    ) -> list[RoutingDecision]:
+        """Generate refinement decisions. Uses deterministic adjustments + optional LLM."""
+        refined: list[RoutingDecision] = []
 
-    async def _rerank(self, results: list[SearchResult], context: str) -> list[SearchResult]:
-        if not results:
-            return []
-        if len(results) <= 1:
-            return results
-        to_rank = results[:30]
-        summary = []
-        for i, r in enumerate(to_rank):
-            entry: dict[str, Any] = {
-                "index": i,
-                "source": r.source,
-                "title": r.title[:80],
-                "preview": r.content[:280],
-                "timestamp": r.timestamp,
-            }
-            if r.metadata:
-                hints = {k: v for k, v in r.metadata.items() if k in ("url", "from", "to") and v}
-                if hints:
-                    entry["metadata"] = hints
-            summary.append(entry)
-        prompt = (
-            self._prompt_rerank.replace("{context}", context)
-            .replace("{results_summary}", json.dumps(summary, indent=2))
+        if reason == "no_results":
+            # Broaden: retry all sources with just vector search and no filters
+            for d in previous_decisions:
+                if d.query.strip():
+                    refined.append(RoutingDecision(
+                        source=d.source,
+                        methods=["vector"],
+                        query=d.query,
+                        filters=[],  # drop all filters
+                    ))
+
+        elif reason == "low_source_coverage":
+            # Retry missing sources
+            actual_sources = {r.source for r in results}
+            for d in previous_decisions:
+                if d.source not in actual_sources:
+                    refined.append(RoutingDecision(
+                        source=d.source,
+                        methods=d.methods,
+                        query=d.query,
+                        filters=[],  # relax filters
+                    ))
+
+        elif reason == "low_confidence":
+            # Try different methods
+            for d in previous_decisions:
+                new_methods = []
+                if "fulltext" not in d.methods and self._capabilities.can_handle(d.source, "fulltext"):
+                    new_methods.append("fulltext")
+                if "vector" not in d.methods and self._capabilities.can_handle(d.source, "vector"):
+                    new_methods.append("vector")
+                if new_methods:
+                    refined.append(RoutingDecision(
+                        source=d.source,
+                        methods=new_methods,
+                        query=d.query,
+                        filters=d.filters,
+                    ))
+
+        logger.info(
+            "Refinement (reason=%s): %s additional decisions",
+            reason, len(refined),
         )
-        logger.set_tool_step("rerank")
-        try:
-            raw = await self._generate(prompt, max_tokens=200)
-            indices = _parse_json_array(raw, [])
-        finally:
-            logger.set_tool_step(None)
-        validated_indices: list[int] = []
-        seen: set[int] = set()
-        for x in indices:
-            if isinstance(x, int) and 0 <= x < len(to_rank) and x not in seen:
-                seen.add(x)
-                validated_indices.append(x)
-        if not validated_indices:
-            logger.warning("rerank returned invalid or empty indices, using fallback sort")
-            return _fallback_rerank(results, context)
-        if len(validated_indices) < len(to_rank):
-            logger.debug(f"rerank returned {len(validated_indices)}/{len(to_rank)} indices, appending missing")
-        reranked: list[SearchResult] = [to_rank[idx] for idx in validated_indices]
-        for i, r in enumerate(to_rank):
-            if i not in seen:
-                reranked.append(r)
-        return reranked
+        return refined[:4]  # Cap at 4 refinement steps
 
     @traceable(name="universal_search", run_type="chain")
     async def search(
@@ -313,90 +301,149 @@ class UniversalSearchOrchestrator:
         max_results: int = 20,
         do_refinement: bool = True,
     ) -> UniversalSearchResponse:
+        """Main search pipeline.
+
+        1. Build context
+        2. Analyze intent (LLM)
+        3. Route (deterministic, capability-driven)
+        4. Complexity gate (simple = skip LLM plan, complex = use plan)
+        5. Execute searches in parallel
+        6. Weighted fusion ranking
+        7. Metric-driven refinement (if needed)
+        8. Return results
         """
-        Pipeline (refine does NOT re-run intent/plan):
-          intent → plan → execute plan → [refine LLM → if extra steps, execute them] → rerank.
-        """
+        pipeline_start = time.monotonic()
+
+        # 1. Build context
         if user_message and conversation_context:
             context = (user_message.strip() + "\n\n" + conversation_context.strip()).strip()
         else:
             context = (user_message or conversation_context or "").strip()
+
         if not context:
             return UniversalSearchResponse(
                 results=[],
                 errors=["No context provided for search."],
-                meta={
-                    "query": "",
-                    "sources_queried": [],
-                    "iterations": 0,
-                    "total_results": 0,
-                },
+                meta={"query": "", "sources_queried": [], "methods_used": [], "iterations": 0, "total_results": 0, "complexity": "simple", "timing_ms": {}},
             )
 
+        query = _default_query_from_context(context)
         errors: list[str] = []
-        sources_queried: list[str] = []
-        all_steps: list[dict[str, Any]] = []
-        all_results: list[SearchResult] = []
+        timing_ms: dict[str, float] = {}
 
+        # 2. Intent analysis (LLM)
+        t0 = time.monotonic()
         intent = await self._analyze_intent(context)
-        selected = self._select_tools(context, intent)
-        if not selected:
+        timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
+        logger.info(
+            "Intent: %s | entities=%s | temporal=%s | hints=%s | complexity=%s",
+            intent.get("intent"),
+            intent.get("entities"),
+            intent.get("temporal"),
+            intent.get("source_hints"),
+            intent.get("complexity"),
+        )
+
+        # 3. Route (deterministic)
+        t0 = time.monotonic()
+        routing_plan = self._router.route(intent, query)
+        timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
+
+        if not routing_plan.decisions:
             return UniversalSearchResponse(
                 results=[],
-                errors=["No search backends available"],
-                meta={
-                    "query": _default_query_from_context(context),
-                    "sources_queried": [],
-                    "iterations": 0,
-                    "total_results": 0,
-                },
+                errors=["No search backends available for this query"],
+                meta={"query": query, "sources_queried": [], "methods_used": [], "iterations": 0, "total_results": 0, "complexity": routing_plan.complexity, "timing_ms": timing_ms},
             )
 
-        plan = await self._create_search_plan(context, intent, selected)
-        all_steps.extend(plan)
-        results_batch, errs = await self._execute_plan(plan)
-        all_results.extend(results_batch)
-        errors.extend(errs)
-        for s in plan:
-            if s["tool"] not in sources_queried:
-                sources_queried.append(s["tool"])
+        # 4. Complexity gate
+        # Simple queries: execute routing directly, no LLM plan
+        # Complex queries: could use LLM planner, but for now we trust the router
+        # (LLM planning is optional enhancement for complex multi-hop queries)
 
-        refinement_rounds = 0
-        while do_refinement and refinement_rounds < self._max_refinement_rounds:
-            refinement_rounds += 1
-            extra_plan = await self._refine_plan(context, intent, all_results, all_steps)
-            if not extra_plan:
-                logger.debug("universal_search › refine returned 0 steps, no extra search")
-                break
-            logger.debug(f"universal_search › refine returned {len(extra_plan)} steps, executing")
-            all_steps.extend(extra_plan)
-            ref_results, ref_errors = await self._execute_plan(extra_plan)
-            all_results.extend(ref_results)
-            errors.extend(ref_errors)
+        # 5. Execute searches
+        t0 = time.monotonic()
+        all_results, exec_errors = await self._execute_routing(routing_plan.decisions)
+        timing_ms["execution"] = round((time.monotonic() - t0) * 1000, 1)
+        errors.extend(exec_errors)
 
-        if not all_results:
-            return UniversalSearchResponse(
-                results=[],
-                errors=errors,
-                meta={
-                    "query": _default_query_from_context(context),
-                    "sources_queried": list(dict.fromkeys(sources_queried)),
-                    "iterations": 1 + refinement_rounds,
-                    "total_results": 0,
-                },
-            )
+        # 6. Determine if query is personal
+        is_personal = self._is_personal_query(intent)
 
-        reranked = await self._rerank(all_results, context)
-        capped = reranked[:max_results]
-        items = [r.to_item() for r in capped]
+        # 7. Refinement loop
+        iterations = 1
+        notes: list[str] = []
+        if do_refinement:
+            for _ in range(self._max_refinement_rounds):
+                should_refine, reason = self._should_refine(
+                    all_results, intent, routing_plan.decisions,
+                )
+                if not should_refine:
+                    # Note when we have explicit temporal with no results
+                    temporal = intent.get("temporal")
+                    if not all_results and temporal:
+                        notes.append(f"No data found for the requested time period ({temporal}).")
+                    break
+
+                iterations += 1
+                t0 = time.monotonic()
+                refined_decisions = await self._refine(
+                    context, intent, all_results, routing_plan.decisions, reason,
+                )
+                if not refined_decisions:
+                    break
+
+                refined_results, refined_errors = await self._execute_routing(refined_decisions)
+                all_results.extend(refined_results)
+                errors.extend(refined_errors)
+                timing_ms["refinement"] = round((time.monotonic() - t0) * 1000, 1)
+
+        # 8. Fusion ranking
+        t0 = time.monotonic()
+        ranked = self._fusion.fuse_and_rank(
+            all_results,
+            is_personal_query=is_personal,
+            max_results=max_results,
+        )
+        timing_ms["fusion"] = round((time.monotonic() - t0) * 1000, 1)
+
+        # Collect metadata
+        sources_queried = list({d.source for d in routing_plan.decisions})
+        methods_used = list({m for d in routing_plan.decisions for m in d.methods})
+        timing_ms["total"] = round((time.monotonic() - pipeline_start) * 1000, 1)
+
+        logger.info(
+            "Search complete: %s results | sources=%s | methods=%s | iterations=%s | total=%.0fms",
+            len(ranked), sources_queried, methods_used, iterations, timing_ms["total"],
+        )
 
         return UniversalSearchResponse(
-            results=items,
+            results=ranked,
             errors=errors,
+            notes=notes,
             meta={
-                "query": _default_query_from_context(context),
-                "sources_queried": list(dict.fromkeys(sources_queried)),
-                "iterations": 1 + refinement_rounds,
-                "total_results": len(items),
+                "query": query,
+                "sources_queried": sources_queried,
+                "methods_used": methods_used,
+                "iterations": iterations,
+                "total_results": len(ranked),
+                "complexity": routing_plan.complexity,
+                "timing_ms": timing_ms,
             },
         )
+
+    def _is_personal_query(self, intent: dict[str, Any]) -> bool:
+        """Determine if this is a personal data query (vs web/general knowledge)."""
+        hints = intent.get("source_hints") or []
+        hints_str = " ".join(str(h).lower() for h in hints)
+
+        # Explicitly web
+        if any(w in hints_str for w in ("web", "news", "search")):
+            return False
+
+        # Explicitly personal
+        if any(w in hints_str for w in ("email", "calendar", "tasks", "browser", "history", "bookmark")):
+            return True
+
+        # Default: personal (assistant is primarily a personal data tool)
+        return True

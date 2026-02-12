@@ -44,18 +44,20 @@ class Agent:
     conversation: list[Message] = field(default_factory=list)
     max_history: int = 20
     _pending_confirm: dict | None = field(default=None, repr=False)
+    _last_search_result: str | None = field(default=None, repr=False)
+    _last_search_user_msg: str | None = field(default=None, repr=False)
     
     @classmethod
-    def create(cls) -> "Agent":
+    async def create(cls) -> "Agent":
         errors = config.validate()
         if errors:
             raise FileNotFoundError("; ".join(errors))
         
-        tool_registry = setup_tools()
+        tool_registry = await setup_tools()
         system_prompt = save_system_prompt_for_debug(tool_registry)
         llm_client = create_client()
 
-        logger.info("🌟 Lilith Agent initialized!")
+        logger.info("Lilith Agent initialized!")
 
         return cls(
             llm_client=llm_client,
@@ -275,9 +277,19 @@ class Agent:
         if on_event:
             await on_event("tool_call", {"name": tool_name, "args": args})
         if tool_name == "universal_search":
+            user_msg = self._get_last_user_message()
+            # Dedup: if same user message, return cached result
+            if self._last_search_user_msg == user_msg and self._last_search_result:
+                logger.info("Search dedup: returning cached result for '%s'", user_msg[:60])
+                result_content = self._last_search_result
+                result_msg = f"TOOL_RESULT({tool_name}): {result_content}"
+                self.conversation.append(Message(role="user", content=result_msg))
+                if on_event:
+                    await on_event("tool_result", {"name": tool_name, "result": result_content, "success": True})
+                return
             args = {
                 **args,
-                "user_message": self._get_last_user_message(),
+                "user_message": user_msg,
                 "conversation_context": self._get_conversation_context(),
             }
         tool = self.tool_registry.get(tool_name)
@@ -302,6 +314,10 @@ class Agent:
                     result = ToolResult.fail(str(e))
                     run.end(outputs={"success": False, "error": str(e)})
         result_content = result.output if result.success else result.error
+        # Cache search results for dedup
+        if tool_name == "universal_search":
+            self._last_search_user_msg = self._get_last_user_message()
+            self._last_search_result = result_content
         result_msg = f"TOOL_RESULT({tool_name}): {result_content}"
         self.conversation.append(Message(role="user", content=result_msg))
         if on_event:

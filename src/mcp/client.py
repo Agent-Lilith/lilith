@@ -72,7 +72,12 @@ class MCPClient:
 
     async def close(self) -> None:
         if self._exit_stack is not None:
-            await self._exit_stack.aclose()
+            try:
+                await self._exit_stack.aclose()
+            except RuntimeError as e:
+                # Swallow anyio cancel scope runtime errors during shutdown
+                if "cancel scope" not in str(e):
+                    raise
             self._exit_stack = None
             self._session = None
             logger.info("MCP: disconnected")

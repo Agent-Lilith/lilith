@@ -124,7 +124,7 @@ async def run_cli(initial_external: bool = False):
 
     print_banner()
     print(colorize("  Type /help for commands\n", Colors.DIM))
-    agent = Agent.create()
+    agent = await Agent.create()
     try:
         while True:
             try:
@@ -146,7 +146,7 @@ async def run_cli(initial_external: bool = False):
 
             if command == "/recover":
                 await agent.close()
-                agent = Agent.create()
+                agent = await Agent.create()
                 print(colorize("  Recovery complete", Colors.GREEN, Colors.BOLD))
                 print(colorize("  All conversation history has been cleared.", Colors.DIM))
                 print(colorize("  You can send a new message.\n", Colors.DIM))
@@ -228,7 +228,7 @@ async def run_cli(initial_external: bool = False):
             except Exception as e:
                 logger.error(f"Error during chat: {e}", exc_info=True)
                 await agent.close()
-                agent = Agent.create()
+                agent = await Agent.create()
                 print(colorize(f"\n  Error: {e}", Colors.RED))
                 print(colorize("  Recovery complete — all history cleared. Please try again.\n", Colors.YELLOW))
                 continue

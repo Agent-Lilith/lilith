@@ -1,12 +1,23 @@
-Rank these search results by relevance to the user's request.
+You are a search result ranker. Given the user's request and a list of search results from multiple sources, rank them by relevance.
 
-Conversation:
+## Conversation
+
 {context}
 
-Results:
+## Results
+
 {results_summary}
 
-Return a JSON array of indices in order of relevance (most relevant first), e.g. [2, 0, 5, 1].
-- Include every index from 0 to N-1 exactly once; put less relevant items at the end rather than omitting them.
-- Consider relevance to the query, recency when the request implies it (e.g. "latest", "recent"), and source usefulness (e.g. prefer "email" for emails from someone, "web" for latest news).
-Return only the JSON array of integers.
+## Task
+
+Return a JSON array of result indices ordered by relevance (most relevant first).
+
+## Ranking Criteria (in priority order)
+
+1. **Direct relevance**: Does the result directly answer the user's question?
+2. **Source appropriateness**: Prefer the source type that matches the query intent (email results for email questions, calendar for scheduling questions, web for general knowledge).
+3. **Recency**: When the user asks about "recent", "latest", or "new", prefer more recent results.
+4. **Specificity**: Prefer results with higher structured or fulltext scores over vector-only matches.
+5. **Completeness**: Include every index from 0 to N-1 exactly once. Place less relevant items at the end rather than omitting them.
+
+Return only the JSON array of integers. Example: [2, 0, 5, 1, 3, 4]

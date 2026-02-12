@@ -37,6 +37,8 @@ class Config:
     mcp_email_account_id: int
     mcp_browser_command: str
     mcp_browser_args: list[str]
+    mcp_whatsapp_command: str
+    mcp_whatsapp_args: list[str]
 
     @classmethod
     def load(cls) -> "Config":
@@ -69,6 +71,8 @@ class Config:
             mcp_email_account_id=int(os.getenv("MCP_EMAIL_ACCOUNT_ID", "1")),
             mcp_browser_command=os.getenv("MCP_BROWSER_COMMAND", ""),
             mcp_browser_args=[a.strip() for a in os.getenv("MCP_BROWSER_ARGS", "").split(",") if a.strip()],
+            mcp_whatsapp_command=os.getenv("MCP_WHATSAPP_COMMAND", ""),
+            mcp_whatsapp_args=[a.strip() for a in os.getenv("MCP_WHATSAPP_ARGS", "").split(",") if a.strip()],
         )
     
     def validate(self) -> list[str]:

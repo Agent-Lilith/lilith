@@ -130,9 +130,9 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
         text = text[split_at:].lstrip()
     return chunks
 
-def get_agent(user_id: int) -> Agent:
+async def get_agent(user_id: int) -> Agent:
     if user_id not in user_agents:
-        user_agents[user_id] = Agent.create()
+        user_agents[user_id] = await Agent.create()
     return user_agents[user_id]
 
 
@@ -231,7 +231,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
-    agent = get_agent(user_id)
+    agent = await get_agent(user_id)
     use_external = user_model_mode.get(user_id, "local") == "external"
     openrouter_client = OpenRouterClient() if use_external else None
 
@@ -324,7 +324,7 @@ async def _process_agent_chat(
     llm_client_override=None,
 ):
     user_id = update.effective_user.id
-    agent = get_agent(user_id)
+    agent = await get_agent(user_id)
     model_name = config.vllm_model
 
     if response_msg is None:
@@ -492,7 +492,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     user_id = query.from_user.id
-    agent = get_agent(user_id)
+    agent = await get_agent(user_id)
     
     if data.startswith("confirm:"):
         _, tool_name, pending_id = data.split(":", 2)
