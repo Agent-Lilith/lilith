@@ -1,22 +1,29 @@
 """Telegram interface: bot loop, commands, and AI chat."""
 
 import asyncio
-import logging
 import html
 import re
-import bleach
+
+import bleach  # type: ignore[import-untyped]
 from markdown_it import MarkdownIt
-from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+    Message,
+    Update,
+)
+from telegram.constants import ParseMode
 from telegram.error import NetworkError
 from telegram.ext import (
     Application,
-    CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
-    filters,
+    CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
-from telegram.constants import ParseMode
 
 from src.core.agent import Agent, ChatResult
 
@@ -32,8 +39,11 @@ user_agents: dict[int, Agent] = {}
 user_model_mode: dict[int, str] = {}
 user_last_run_log: dict[int, dict] = {}
 
+
 class ThrottledEditor:
-    def __init__(self, message, initial_content="", parse_mode=ParseMode.HTML, use_markdown=False):
+    def __init__(
+        self, message, initial_content="", parse_mode=ParseMode.HTML, use_markdown=False
+    ):
         self.message = message
         self.content = initial_content
         self.parse_mode = parse_mode
@@ -46,7 +56,7 @@ class ThrottledEditor:
     async def update(self, new_content, force=False):
         if not new_content or not new_content.strip():
             return
-            
+
         async with self.lock:
             self.content = new_content
             if force:
@@ -72,10 +82,10 @@ class ThrottledEditor:
             if self.use_markdown:
                 content = md_to_html(content)
             safe_content = clean_html(content)
-            
+
             if not safe_content.strip():
                 return
-                
+
             await self.message.edit_text(
                 safe_content,
                 parse_mode=self.parse_mode,
@@ -86,7 +96,18 @@ class ThrottledEditor:
             if "Message is not modified" not in str(e):
                 logger.error(f"ThrottledEditor error: {e}")
 
-_TELEGRAM_HTML_TAGS = {"b", "i", "u", "s", "a", "code", "pre", "blockquote", "tg-spoiler"}
+
+_TELEGRAM_HTML_TAGS = {
+    "b",
+    "i",
+    "u",
+    "s",
+    "a",
+    "code",
+    "pre",
+    "blockquote",
+    "tg-spoiler",
+}
 _TELEGRAM_HTML_ATTRS = {"a": ["href", "title"]}
 
 _md_renderer = MarkdownIt("commonmark", {"breaks": True})
@@ -98,7 +119,9 @@ def md_to_html(text: str) -> str:
     html_out = _md_renderer.render(text)
     html_out = html_out.replace("<strong>", "<b>").replace("</strong>", "</b>")
     html_out = html_out.replace("<em>", "<i>").replace("</em>", "</i>")
-    html_out = html_out.replace("<br />", "\n").replace("<br/>", "\n").replace("<br>", "\n")
+    html_out = (
+        html_out.replace("<br />", "\n").replace("<br/>", "\n").replace("<br>", "\n")
+    )
     return html_out
 
 
@@ -112,23 +135,25 @@ def clean_html(text: str) -> str:
         strip=True,
     )
 
+
 def split_message(text: str, limit: int = 4000) -> list[str]:
     if len(text) <= limit:
         return [text]
-    
+
     chunks = []
     while text:
         if len(text) <= limit:
             chunks.append(text)
             break
-        
-        split_at = text.rfind('\n', 0, limit)
+
+        split_at = text.rfind("\n", 0, limit)
         if split_at == -1:
             split_at = limit
-        
+
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip()
     return chunks
+
 
 async def get_agent(user_id: int) -> Agent:
     if user_id not in user_agents:
@@ -148,8 +173,13 @@ async def _reset_agent_for_user(user_id: int) -> None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
     if not is_authorized(user.id):
-        await update.message.reply_text("I'm sorry, Dave. I'm afraid I can't do that. (Unauthorized)")
+        await message.reply_text(
+            "I'm sorry, Dave. I'm afraid I can't do that. (Unauthorized)"
+        )
         return
 
     welcome_text = (
@@ -157,10 +187,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "I'm here to help you with research, organization, and whatever else my brilliant brain can handle.\n\n"
         "Try talking to me or use /help to see what I can do!"
     )
-    await update.message.reply_text(welcome_text)
+    await message.reply_text(welcome_text)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if message is None:
+        return
     help_text = (
         "<b>Commands:</b>\n"
         "/start - Start the bot\n"
@@ -171,49 +204,67 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/local - Use local model\n\n"
         "Just talk to me! I'll stream my brilliant thoughts in real-time. ✨"
     )
-    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    await message.reply_text(help_text, parse_mode=ParseMode.HTML)
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    user_id = user.id
     if user_id in user_agents:
         user_agents[user_id].clear_history()
-        await update.message.reply_text("🧹 Conversation cleared! ✨")
+        await message.reply_text("🧹 Conversation cleared! ✨")
     else:
-        await update.message.reply_text("Nothing to clear yet~")
+        await message.reply_text("Nothing to clear yet~")
 
 
 async def recover_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
         return
-    user_id = update.effective_user.id
+    if not is_authorized(user.id):
+        return
+    user_id = user.id
     await _reset_agent_for_user(user_id)
     msg = (
         "🔄 <b>Recovery complete</b>\n\n"
         "All conversation history has been cleared. You can send a new message."
     )
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW)
+    await message.reply_text(
+        msg, parse_mode=ParseMode.HTML, link_preview_options=NO_PREVIEW
+    )
 
 
 async def external_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    if not is_authorized(user.id):
         return
     if not config.openrouter_api_key or not config.openrouter_api_key.strip():
-        await update.message.reply_text(
+        await message.reply_text(
             "OpenRouter is not configured. Set OPENROUTER_API_KEY in .env to use external models."
         )
         return
-    user_model_mode[update.effective_user.id] = "external"
-    await update.message.reply_text(
+    user_model_mode[user.id] = "external"
+    await message.reply_text(
         "Using OpenRouter free models. Send /local to switch back to your local model."
     )
 
 
 async def local_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_authorized(update.effective_user.id):
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
         return
-    user_model_mode[update.effective_user.id] = "local"
-    await update.message.reply_text("Using local model.")
+    if not is_authorized(user.id):
+        return
+    user_model_mode[user.id] = "local"
+    await message.reply_text("Using local model.")
 
 
 def is_authorized(user_id: int) -> bool:
@@ -223,11 +274,15 @@ def is_authorized(user_id: int) -> bool:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    user_id = user.id
     if not is_authorized(user_id):
         return
 
-    user_text = update.message.text
+    user_text = message.text
     if not user_text:
         return
 
@@ -235,14 +290,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     use_external = user_model_mode.get(user_id, "local") == "external"
     openrouter_client = OpenRouterClient() if use_external else None
 
-    response_msg = await update.message.reply_text(
+    response_msg = await message.reply_text(
         "<i>...</i>",
         parse_mode=ParseMode.HTML,
         link_preview_options=NO_PREVIEW,
     )
     response_editor = ThrottledEditor(response_msg, "<i>...</i>", use_markdown=True)
     await _process_agent_chat(
-        update, context, user_text,
+        update,
+        context,
+        user_text,
         status_editor=None,
         activities=None,
         response_msg=response_msg,
@@ -252,15 +309,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    user_id = user.id
     if not is_authorized(user_id):
         return
 
-    voice = update.message.voice
+    voice = message.voice
     if not voice:
         return
 
-    status_msg = await update.message.reply_text(
+    status_msg = await message.reply_text(
         "Downloading...",
         parse_mode=ParseMode.HTML,
         link_preview_options=NO_PREVIEW,
@@ -284,7 +345,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         use_external = user_model_mode.get(user_id, "local") == "external"
         openrouter_client = OpenRouterClient() if use_external else None
         await _process_agent_chat(
-            update, context, agent_input,
+            update,
+            context,
+            agent_input,
             status_editor=None,
             activities=None,
             response_msg=None,
@@ -299,6 +362,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "voice_file_path" in locals() and voice_file_path.exists():
             voice_file_path.unlink()
 
+
 def _format_run_log(model: str, thought: str, activities: list[str]) -> str:
     parts = []
     if model:
@@ -308,7 +372,12 @@ def _format_run_log(model: str, thought: str, activities: list[str]) -> str:
     if activities:
         parts.append("Tools")
         for line in activities:
-            plain = re.sub(r"<[^>]+>", "", line).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            plain = (
+                re.sub(r"<[^>]+>", "", line)
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&")
+            )
             parts.append(f"  {plain}")
     if not parts:
         return "No details for this reply."
@@ -316,19 +385,25 @@ def _format_run_log(model: str, thought: str, activities: list[str]) -> str:
 
 
 async def _process_agent_chat(
-    update, context, user_text,
+    update,
+    context,
+    user_text,
     status_editor=None,
     activities=None,
     response_msg=None,
     response_editor=None,
     llm_client_override=None,
 ):
-    user_id = update.effective_user.id
+    user = update.effective_user
+    message = update.message
+    if user is None or message is None:
+        return
+    user_id = user.id
     agent = await get_agent(user_id)
     model_name = config.vllm_model
 
     if response_msg is None:
-        response_msg = await update.message.reply_text(
+        response_msg = await message.reply_text(
             "<i>...</i>",
             parse_mode=ParseMode.HTML,
             link_preview_options=NO_PREVIEW,
@@ -358,7 +433,7 @@ async def _process_agent_chat(
                 response_buffer += data
                 if response_msg is None:
                     await update_hub()
-                    response_msg = await update.message.reply_text(
+                    response_msg = await message.reply_text(
                         "<i>...</i>",
                         parse_mode=ParseMode.HTML,
                         link_preview_options=NO_PREVIEW,
@@ -381,7 +456,10 @@ async def _process_agent_chat(
                 result_preview = result_raw[:max_preview].strip()
                 if len(result_raw) > max_preview:
                     result_preview += " … (truncated)"
-                run_log.append(f"  → <b>{html.escape(tool_name)}</b> done" + (f" — {html.escape(result_preview)}" if result_preview else ""))
+                run_log.append(
+                    f"  → <b>{html.escape(tool_name)}</b> done"
+                    + (f" — {html.escape(result_preview)}" if result_preview else "")
+                )
                 if has_status_hub:
                     activities[-1] = f"<b>{tool_name}</b> complete"
                     await update_hub()
@@ -395,14 +473,18 @@ async def _process_agent_chat(
             inputs={"user_message": user_text[:500]},
             metadata={"interface": "telegram", "user_id": user_id},
         ) as run:
-            result = await agent.chat(user_text, on_event=on_event, llm_client_override=llm_client_override)
+            result = await agent.chat(
+                user_text, on_event=on_event, llm_client_override=llm_client_override
+            )
             response = result.response if isinstance(result, ChatResult) else result
             run.end(outputs={"response_preview": (response or "")[:500]})
         response = result.response if isinstance(result, ChatResult) else result
 
         if llm_client_override:
             models = getattr(llm_client_override, "models", None)
-            model_name = getattr(llm_client_override, "last_model_used", None) or (models[0] if models else "openrouter")
+            model_name = getattr(llm_client_override, "last_model_used", None) or (
+                models[0] if models else "openrouter"
+            )
 
         if has_status_hub:
             final_hub = "\n".join(activities)
@@ -412,32 +494,46 @@ async def _process_agent_chat(
 
         final_response = response
         reply_markup = None
-        
+
         if isinstance(result, ChatResult) and result.pending_confirm:
             pending = result.pending_confirm
             summary = pending.get("summary", "Proceed?")
             pending_id = pending.get("pending_id", "")
             tool_name = pending.get("tool", "calendar_write")
-            
-            keyboard = [[
-                InlineKeyboardButton("Yes ✅", callback_data=f"confirm:{tool_name}:{pending_id}"),
-                InlineKeyboardButton("No ❌", callback_data=f"cancel:{tool_name}:{pending_id}"),
-            ]]
+
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "Yes ✅", callback_data=f"confirm:{tool_name}:{pending_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "No ❌", callback_data=f"cancel:{tool_name}:{pending_id}"
+                    ),
+                ]
+            ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             final_response += f"\n\n<b>{summary}</b>"
 
-        user_last_run_log[user_id] = {"model": model_name, "thought": thought_buffer, "activities": run_log}
+        user_last_run_log[user_id] = {
+            "model": model_name,
+            "thought": thought_buffer,
+            "activities": run_log,
+        }
         has_details = True
         if has_details:
             if reply_markup is None:
-                reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("Details", callback_data="details")]])
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Details", callback_data="details")]]
+                )
             else:
-                rows = list(reply_markup.inline_keyboard) + [[InlineKeyboardButton("Details", callback_data="details")]]
+                rows = list(reply_markup.inline_keyboard) + [
+                    [InlineKeyboardButton("Details", callback_data="details")]
+                ]
                 reply_markup = InlineKeyboardMarkup(rows)
 
         if response_msg is None:
             response_chunks = split_message(final_response)
-            response_msg = await update.message.reply_text(
+            response_msg = await message.reply_text(
                 response_chunks[0],
                 reply_markup=reply_markup if len(response_chunks) == 1 else None,
                 parse_mode=ParseMode.HTML,
@@ -445,7 +541,7 @@ async def _process_agent_chat(
             )
             for i in range(1, len(response_chunks)):
                 markup = reply_markup if i == len(response_chunks) - 1 else None
-                await update.message.reply_text(
+                await message.reply_text(
                     response_chunks[i],
                     reply_markup=markup,
                     parse_mode=ParseMode.HTML,
@@ -456,10 +552,10 @@ async def _process_agent_chat(
             await response_editor.update(chunks[0], force=True)
             if reply_markup and len(chunks) == 1:
                 await response_msg.edit_reply_markup(reply_markup)
-            
+
             for i in range(1, len(chunks)):
                 markup = reply_markup if i == len(chunks) - 1 else None
-                await update.message.reply_text(
+                await message.reply_text(
                     chunks[i],
                     reply_markup=markup,
                     parse_mode=ParseMode.HTML,
@@ -480,20 +576,31 @@ async def _process_agent_chat(
                 link_preview_options=NO_PREVIEW,
             )
         else:
-            await update.message.reply_text(
+            await message.reply_text(
                 err_text,
                 parse_mode=ParseMode.HTML,
                 link_preview_options=NO_PREVIEW,
             )
 
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if query is None:
+        return
     await query.answer()
-    
-    data = query.data
-    user_id = query.from_user.id
+
+    data = query.data or ""
+    from_user = query.from_user
+    if from_user is None:
+        return
+    user_id = from_user.id
     agent = await get_agent(user_id)
-    
+
+    callback_message = query.message
+    msg_text = getattr(callback_message, "text", None) if callback_message else None
+    if msg_text is not None and not isinstance(msg_text, str):
+        msg_text = str(msg_text)
+
     if data.startswith("confirm:"):
         _, tool_name, pending_id = data.split(":", 2)
         pending = {"tool": tool_name, "pending_id": pending_id, "summary": ""}
@@ -503,21 +610,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lambda: get_confirmation_result(agent.tool_registry, pending, True),
         )
         status = "✅" if success else "❌"
-        await query.edit_message_text(text=f"{query.message.text}\n\n{status} {message}")
+        await query.edit_message_text(text=f"{msg_text or ''}\n\n{status} {message}")
 
     elif data.startswith("cancel:"):
-        await query.edit_message_text(text=f"{query.message.text}\n\n🚫 Cancelled.")
+        await query.edit_message_text(text=f"{msg_text or ''}\n\n🚫 Cancelled.")
 
     elif data == "details":
         if not is_authorized(user_id):
             return
         log = user_last_run_log.get(user_id)
         if not log:
-            await query.message.reply_text(
-                "<i>No run log available for the last reply.</i>",
-                parse_mode=ParseMode.HTML,
-                link_preview_options=NO_PREVIEW,
-            )
+            if isinstance(callback_message, Message):
+                await callback_message.reply_text(
+                    "<i>No run log available for the last reply.</i>",
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=NO_PREVIEW,
+                )
             return
         body = _format_run_log(
             log.get("model") or "",
@@ -525,18 +633,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.get("activities") or [],
         )
         for chunk in split_message(body, limit=4000):
-            await query.message.reply_text(
-                chunk,
-                link_preview_options=NO_PREVIEW,
-            )
+            if isinstance(callback_message, Message):
+                await callback_message.reply_text(
+                    chunk,
+                    link_preview_options=NO_PREVIEW,
+                )
 
 
-async def _telegram_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _telegram_error_handler(
+    update: object, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     err = context.error
     if err is None:
         return
     msg = str(err).strip() or err.__class__.__name__
-    if isinstance(err, NetworkError) or "disconnected" in msg.lower() or "connection" in msg.lower():
+    if (
+        isinstance(err, NetworkError)
+        or "disconnected" in msg.lower()
+        or "connection" in msg.lower()
+    ):
         logger.warning(f"Telegram network: {msg}")
     else:
         logger.error(f"Telegram: {msg}", exception=err)

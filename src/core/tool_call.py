@@ -2,9 +2,10 @@
 
 import json
 import re
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
+
 
 class CalendarReadCall(BaseModel):
     tool: Literal["calendar_read"] = "calendar_read"
@@ -95,23 +96,23 @@ class SummarizeEmailsCall(BaseModel):
     @field_validator("email_ids", mode="before")
     @classmethod
     def coerce_email_ids(cls, v: object) -> str:
-        return json.dumps(v) if isinstance(v, list) else (str(v) if v is not None else "")
+        return (
+            json.dumps(v) if isinstance(v, list) else (str(v) if v is not None else "")
+        )
 
 
 ToolCallUnion = Annotated[
-    Union[
-        CalendarReadCall,
-        CalendarWriteCall,
-        UniversalSearchCall,
-        ReadPageCall,
-        ReadPagesCall,
-        TasksReadCall,
-        TasksWriteCall,
-        ExecutePythonCall,
-        GetEmailCall,
-        GetEmailThreadCall,
-        SummarizeEmailsCall,
-    ],
+    CalendarReadCall
+    | CalendarWriteCall
+    | UniversalSearchCall
+    | ReadPageCall
+    | ReadPagesCall
+    | TasksReadCall
+    | TasksWriteCall
+    | ExecutePythonCall
+    | GetEmailCall
+    | GetEmailThreadCall
+    | SummarizeEmailsCall,
     Field(discriminator="tool"),
 ]
 
@@ -129,7 +130,7 @@ ToolCall = (
     | SummarizeEmailsCall
 )
 
-_tool_call_adapter = TypeAdapter(ToolCallUnion)
+_tool_call_adapter: TypeAdapter[ToolCallUnion] = TypeAdapter(ToolCallUnion)
 
 
 def _extract_fenced_json(text: str) -> tuple[str | None, int]:
@@ -211,7 +212,12 @@ def parse_legacy_tool_call(
         return None
     args = {}
     for k, v in re.findall(r'([\w_]+)="([^"]*)"', args_str, re.DOTALL):
-        v_clean = v.replace("\\n", "\n").replace("\\\"", "\"").replace("\\'", "'").replace("\\\\", "\\")
+        v_clean = (
+            v.replace("\\n", "\n")
+            .replace('\\"', '"')
+            .replace("\\'", "'")
+            .replace("\\\\", "\\")
+        )
         args[k] = v_clean
     for k, v in re.findall(r"([\w_]+)=([^\s/\"'>=]+)", args_str):
         if k not in args and v:

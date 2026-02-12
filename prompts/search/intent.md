@@ -17,7 +17,7 @@ Return a single JSON object with exactly these fields:
   - A string (simple entity name), or
   - An object with `name` (string) and `role` (string: "sender", "recipient", "mentioned", "organization", "topic").
 - **temporal** (string or null): Time reference. Use exact phrases like "today", "yesterday", "last week", "this month", "2026-01-15", or null if no time constraint.
-- **source_hints** (array of strings): Which data sources are relevant. Choose from: "email", "browser", "history", "bookmarks", "calendar", "tasks", "web", "whatsapp". Include multiple if the query spans sources. Empty array if unclear.
+- **source_hints** (array of strings): Which data sources are relevant. Choose from: "email", "browser_history", "browser_bookmarks", "calendar", "tasks", "web", "whatsapp". Include multiple only if the query truly spans sources. Empty array if unclear.
 - **complexity** (string): "simple" if the query targets one source with straightforward filters. "multi_hop" if it requires cross-source reasoning, relationship traversal, or multiple dependent lookups.
 - **retrieval_hints** (array of strings): Preferred retrieval methods. Choose from: "structured" (exact filters like dates, senders, domains), "fulltext" (keyword matching), "vector" (semantic/conceptual similarity). Include multiple if appropriate.
 - **ambiguities** (array of strings): What is unclear about the request. Empty array if fully clear.

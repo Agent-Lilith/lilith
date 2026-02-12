@@ -85,11 +85,9 @@ class EmailGetTool(_BaseEmailTool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(
-        self,
-        email_id: str = "",
-        account_id: str = "",
-    ) -> ToolResult:
+    async def execute(self, **kwargs: object) -> ToolResult:
+        email_id = str(kwargs.get("email_id", ""))
+        account_id = str(kwargs.get("account_id", ""))
         if not email_id or not email_id.strip():
             return ToolResult.fail("email_id is required")
         args: dict[str, Any] = {
@@ -122,11 +120,9 @@ class EmailGetThreadTool(_BaseEmailTool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(
-        self,
-        thread_id: str = "",
-        account_id: str = "",
-    ) -> ToolResult:
+    async def execute(self, **kwargs: object) -> ToolResult:
+        thread_id = str(kwargs.get("thread_id", ""))
+        account_id = str(kwargs.get("account_id", ""))
         if not thread_id or not thread_id.strip():
             return ToolResult.fail("thread_id is required")
         args: dict[str, Any] = {
@@ -160,12 +156,10 @@ class EmailsSummarizeTool(_BaseEmailTool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(
-        self,
-        email_ids: str = "",
-        thread_id: str = "",
-        account_id: str = "",
-    ) -> ToolResult:
+    async def execute(self, **kwargs: object) -> ToolResult:
+        email_ids = str(kwargs.get("email_ids", ""))
+        thread_id = str(kwargs.get("thread_id", ""))
+        account_id = str(kwargs.get("account_id", ""))
         ids = _parse_list(email_ids)
         tid = thread_id.strip() if thread_id else None
         if not ids and not tid:
@@ -179,6 +173,8 @@ class EmailsSummarizeTool(_BaseEmailTool):
             args["email_ids"] = ids
         if tid:
             args["thread_id"] = tid
-        logger.tool_execute(self.name, {k: v for k, v in args.items() if k != "email_ids"})
+        logger.tool_execute(
+            self.name, {k: v for k, v in args.items() if k != "email_ids"}
+        )
         result = await self._mcp.call_tool(MCP_EMAILS_SUMMARIZE, args)
         return _tool_result_from_mcp(result)

@@ -1,28 +1,33 @@
 """Tool registration, MCP wiring, and capability discovery at startup."""
 
-from src.contracts.mcp_search_v1 import SearchCapabilities, FilterSpec, SourceClass
+from src.contracts.mcp_search_v1 import (
+    FilterSpec,
+    RetrievalMethod,
+    SearchCapabilities,
+    SourceClass,
+)
 from src.core.config import config
 from src.core.logger import logger
 from src.core.prompts import build_system_prompt
+from src.orchestrators.search.backends import (
+    CalendarSearchBackend,
+    TasksSearchBackend,
+    WebSearchBackend,
+)
 from src.orchestrators.search.capabilities import CapabilityRegistry
 from src.orchestrators.search.dispatcher import MCPSearchDispatcher
 from src.orchestrators.search.orchestrator import UniversalSearchOrchestrator
-from src.orchestrators.search.backends import (
-    WebSearchBackend,
-    CalendarSearchBackend,
-    TasksSearchBackend,
-)
 from src.services.google_service import GoogleService
-from src.tools.base import ToolRegistry
 from src.tools import (
-    ReadPageTool,
-    ReadPagesTool,
-    ExecutePythonTool,
     CalendarReadTool,
     CalendarWriteTool,
+    ExecutePythonTool,
+    ReadPagesTool,
+    ReadPageTool,
     TasksReadTool,
     TasksWriteTool,
 )
+from src.tools.base import ToolRegistry
 from src.tools.universal_search import UniversalSearchTool
 
 
@@ -46,7 +51,9 @@ async def _discover_capabilities(
             elif "source_name" in caps_data:
                 return [caps_data["source_name"]]
     except Exception as e:
-        logger.warning("Failed to discover capabilities from '%s': %s", connection_key, e)
+        logger.warning(
+            "Failed to discover capabilities from '%s': %s", connection_key, e
+        )
 
     return []
 
@@ -102,23 +109,38 @@ async def setup_tools() -> ToolRegistry:
 
         # Discover capabilities
         email_sources = await _discover_capabilities(
-            mcp_email_call, "email", dispatcher, capabilities,
+            mcp_email_call,
+            "email",
+            dispatcher,
+            capabilities,
         )
         if not email_sources:
             # Fallback: register known capabilities
             email_sources = ["email"]
-            capabilities.register(SearchCapabilities(
-                source_name="email",
-                source_class=SourceClass.PERSONAL,
-                supported_methods=["structured", "fulltext", "vector"],
-                supported_filters=[
-                    FilterSpec(name="from_email", type="string", operators=["eq", "contains"]),
-                    FilterSpec(name="date_after", type="date", operators=["gte"]),
-                    FilterSpec(name="date_before", type="date", operators=["lte"]),
-                    FilterSpec(name="labels", type="string[]", operators=["in"]),
-                    FilterSpec(name="has_attachments", type="boolean", operators=["eq"]),
-                ],
-            ))
+            capabilities.register(
+                SearchCapabilities(
+                    source_name="email",
+                    source_class=SourceClass.PERSONAL,
+                    supported_methods=[
+                        RetrievalMethod.STRUCTURED,
+                        RetrievalMethod.FULLTEXT,
+                        RetrievalMethod.VECTOR,
+                    ],
+                    supported_filters=[
+                        FilterSpec(
+                            name="from_email",
+                            type="string",
+                            operators=["eq", "contains"],
+                        ),
+                        FilterSpec(name="date_after", type="date", operators=["gte"]),
+                        FilterSpec(name="date_before", type="date", operators=["lte"]),
+                        FilterSpec(name="labels", type="string[]", operators=["in"]),
+                        FilterSpec(
+                            name="has_attachments", type="boolean", operators=["eq"]
+                        ),
+                    ],
+                )
+            )
 
         dispatcher.register_mcp("email", email_sources, mcp_email_call)
         logger.info("Email MCP registered: sources=%s", email_sources)
@@ -128,36 +150,57 @@ async def setup_tools() -> ToolRegistry:
     if config.mcp_browser_command:
         from src.mcp_client.client import MCPClient
 
-        mcp_browser_client = MCPClient(config.mcp_browser_command, config.mcp_browser_args)
+        mcp_browser_client = MCPClient(
+            config.mcp_browser_command, config.mcp_browser_args
+        )
 
         async def mcp_browser_call(name: str, args: dict):
             return await mcp_browser_client.call_tool(name, args)
 
         # Discover capabilities
         browser_sources = await _discover_capabilities(
-            mcp_browser_call, "browser", dispatcher, capabilities,
+            mcp_browser_call,
+            "browser",
+            dispatcher,
+            capabilities,
         )
         if not browser_sources:
             # Fallback
             browser_sources = ["browser_history", "browser_bookmarks"]
-            capabilities.register(SearchCapabilities(
-                source_name="browser_history",
-                source_class=SourceClass.PERSONAL,
-                supported_methods=["structured", "fulltext", "vector"],
-                supported_filters=[
-                    FilterSpec(name="date_after", type="date", operators=["gte"]),
-                    FilterSpec(name="date_before", type="date", operators=["lte"]),
-                    FilterSpec(name="domain", type="string", operators=["contains"]),
-                ],
-            ))
-            capabilities.register(SearchCapabilities(
-                source_name="browser_bookmarks",
-                source_class=SourceClass.PERSONAL,
-                supported_methods=["structured", "fulltext", "vector"],
-                supported_filters=[
-                    FilterSpec(name="folder", type="string", operators=["contains"]),
-                ],
-            ))
+            capabilities.register(
+                SearchCapabilities(
+                    source_name="browser_history",
+                    source_class=SourceClass.PERSONAL,
+                    supported_methods=[
+                        RetrievalMethod.STRUCTURED,
+                        RetrievalMethod.FULLTEXT,
+                        RetrievalMethod.VECTOR,
+                    ],
+                    supported_filters=[
+                        FilterSpec(name="date_after", type="date", operators=["gte"]),
+                        FilterSpec(name="date_before", type="date", operators=["lte"]),
+                        FilterSpec(
+                            name="domain", type="string", operators=["contains"]
+                        ),
+                    ],
+                )
+            )
+            capabilities.register(
+                SearchCapabilities(
+                    source_name="browser_bookmarks",
+                    source_class=SourceClass.PERSONAL,
+                    supported_methods=[
+                        RetrievalMethod.STRUCTURED,
+                        RetrievalMethod.FULLTEXT,
+                        RetrievalMethod.VECTOR,
+                    ],
+                    supported_filters=[
+                        FilterSpec(
+                            name="folder", type="string", operators=["contains"]
+                        ),
+                    ],
+                )
+            )
 
         dispatcher.register_mcp("browser", browser_sources, mcp_browser_call)
         logger.info("Browser MCP registered: sources=%s", browser_sources)
@@ -166,26 +209,37 @@ async def setup_tools() -> ToolRegistry:
     if config.mcp_whatsapp_command:
         from src.mcp_client.client import MCPClient
 
-        mcp_whatsapp_client = MCPClient(config.mcp_whatsapp_command, config.mcp_whatsapp_args)
+        mcp_whatsapp_client = MCPClient(
+            config.mcp_whatsapp_command, config.mcp_whatsapp_args
+        )
 
         async def mcp_whatsapp_call(name: str, args: dict):
             return await mcp_whatsapp_client.call_tool(name, args)
 
         whatsapp_sources = await _discover_capabilities(
-            mcp_whatsapp_call, "whatsapp", dispatcher, capabilities,
+            mcp_whatsapp_call,
+            "whatsapp",
+            dispatcher,
+            capabilities,
         )
         if not whatsapp_sources:
-            capabilities.register(SearchCapabilities(
-                source_name="whatsapp_messages",
-                source_class=SourceClass.PERSONAL,
-                supported_methods=["structured", "fulltext", "vector"],
-                supported_filters=[
-                    FilterSpec(name="chat_id", type="integer", operators=["eq"]),
-                    FilterSpec(name="from_me", type="boolean", operators=["eq"]),
-                    FilterSpec(name="date_after", type="date", operators=["gte"]),
-                    FilterSpec(name="date_before", type="date", operators=["lte"]),
-                ],
-            ))
+            capabilities.register(
+                SearchCapabilities(
+                    source_name="whatsapp_messages",
+                    source_class=SourceClass.PERSONAL,
+                    supported_methods=[
+                        RetrievalMethod.STRUCTURED,
+                        RetrievalMethod.FULLTEXT,
+                        RetrievalMethod.VECTOR,
+                    ],
+                    supported_filters=[
+                        FilterSpec(name="chat_id", type="integer", operators=["eq"]),
+                        FilterSpec(name="from_me", type="boolean", operators=["eq"]),
+                        FilterSpec(name="date_after", type="date", operators=["gte"]),
+                        FilterSpec(name="date_before", type="date", operators=["lte"]),
+                    ],
+                )
+            )
             whatsapp_sources = ["whatsapp_messages"]
 
         dispatcher.register_mcp("whatsapp", whatsapp_sources, mcp_whatsapp_call)
@@ -212,10 +266,11 @@ async def setup_tools() -> ToolRegistry:
     # Email direct tools (get, thread, summarize) via MCP
     if mcp_email_client is not None:
         from src.tools.email import (
-            EmailGetTool,
             EmailGetThreadTool,
+            EmailGetTool,
             EmailsSummarizeTool,
         )
+
         registry.register(EmailGetTool(mcp_email_client))
         registry.register(EmailGetThreadTool(mcp_email_client))
         registry.register(EmailsSummarizeTool(mcp_email_client))

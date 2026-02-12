@@ -1,7 +1,8 @@
 """Shared helpers for tool confirmation flow (calendar_write, tasks_write)."""
 
+from collections.abc import Awaitable, Callable
+
 from src.tools.base import ToolRegistry, ToolResult
-from typing import Callable, Awaitable
 
 
 def run_pending_confirm(

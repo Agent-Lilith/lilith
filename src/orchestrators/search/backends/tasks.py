@@ -21,24 +21,36 @@ class TasksSearchBackend(SearchBackend):
         if not self._service.is_connected:
             return []
 
-        f_dict = {fc["field"]: fc["value"] for fc in (filters or []) if "field" in fc and "value" in fc}
+        f_dict = {
+            fc["field"]: fc["value"]
+            for fc in (filters or [])
+            if "field" in fc and "value" in fc
+        }
         list_id = f_dict.get("list_id", "")
         show_completed = f_dict.get("show_completed", True)
         query_lower = (query or "").lower().split()
 
         def _sync_list_tasks() -> list[SearchResultV1]:
             lid = self._service.get_task_list_id(list_id or None)
-            tasks_result = self._service.tasks.tasks().list(
-                tasklist=lid,
-                showCompleted=bool(show_completed),
-            ).execute()
+            tasks_result = (
+                self._service.tasks.tasks()
+                .list(
+                    tasklist=lid,
+                    showCompleted=bool(show_completed),
+                )
+                .execute()
+            )
             raw = tasks_result.get("items", [])
 
             if query_lower:
                 filtered = [
-                    t for t in raw
+                    t
+                    for t in raw
                     if any(
-                        q in ((t.get("title") or "") + " " + (t.get("notes") or "")).lower()
+                        q
+                        in (
+                            (t.get("title") or "") + " " + (t.get("notes") or "")
+                        ).lower()
                         for q in query_lower
                     )
                 ]
@@ -58,24 +70,26 @@ class TasksSearchBackend(SearchBackend):
                     content += f"\n{notes}"
                 score = max(0.3, 1.0 - (i * 0.04))
 
-                results.append(SearchResultV1(
-                    id=task.get("id", f"task_{i}"),
-                    source="tasks",
-                    source_class=SourceClass.PERSONAL,
-                    title=title,
-                    snippet=content,
-                    timestamp=due if due else None,
-                    scores={"structured": score},
-                    methods_used=["structured"],
-                    metadata={
-                        "task_id": task.get("id"),
-                        "list_id": lid,
-                        "due": due,
-                        "status": status,
-                        "notes": notes,
-                    },
-                    provenance=f"task: {title[:50]}",
-                ))
+                results.append(
+                    SearchResultV1(
+                        id=task.get("id", f"task_{i}"),
+                        source="tasks",
+                        source_class=SourceClass.PERSONAL,
+                        title=title,
+                        snippet=content,
+                        timestamp=due if due else None,
+                        scores={"structured": score},
+                        methods_used=["structured"],
+                        metadata={
+                            "task_id": task.get("id"),
+                            "list_id": lid,
+                            "due": due,
+                            "status": status,
+                            "notes": notes,
+                        },
+                        provenance=f"task: {title[:50]}",
+                    )
+                )
             return results
 
         return await asyncio.to_thread(_sync_list_tasks)
@@ -91,6 +105,16 @@ class TasksSearchBackend(SearchBackend):
 
     def get_supported_filters(self) -> list[dict[str, Any]]:
         return [
-            {"name": "list_id", "type": "string", "operators": ["eq"], "description": "Google Tasks list ID"},
-            {"name": "show_completed", "type": "boolean", "operators": ["eq"], "description": "Include completed tasks"},
+            {
+                "name": "list_id",
+                "type": "string",
+                "operators": ["eq"],
+                "description": "Google Tasks list ID",
+            },
+            {
+                "name": "show_completed",
+                "type": "boolean",
+                "operators": ["eq"],
+                "description": "Include completed tasks",
+            },
         ]

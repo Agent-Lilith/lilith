@@ -11,7 +11,6 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from src.core.config import config
@@ -44,14 +43,30 @@ def _short_reason(reason: str | None, max_len: int = 80) -> str:
 
 
 _TURN_SEP = "  " + "─" * 42 + "  "
-_llm_ctx: contextvars.ContextVar[tuple[float, str] | None] = contextvars.ContextVar("llm_request", default=None)
-_log_in_turn: contextvars.ContextVar[bool] = contextvars.ContextVar("log_in_turn", default=False)
-_log_in_tool: contextvars.ContextVar[bool] = contextvars.ContextVar("log_in_tool", default=False)
-_log_tool_start: contextvars.ContextVar[float | None] = contextvars.ContextVar("log_tool_start", default=None)
-_log_tool_name: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_tool_name", default=None)
-_log_tool_step: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_tool_step", default=None)
-_log_page_index: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_page_index", default=None)
-_log_page_hint: contextvars.ContextVar[str | None] = contextvars.ContextVar("log_page_hint", default=None)
+_llm_ctx: contextvars.ContextVar[tuple[float, str] | None] = contextvars.ContextVar(
+    "llm_request", default=None
+)
+_log_in_turn: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "log_in_turn", default=False
+)
+_log_in_tool: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "log_in_tool", default=False
+)
+_log_tool_start: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "log_tool_start", default=None
+)
+_log_tool_name: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "log_tool_name", default=None
+)
+_log_tool_step: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "log_tool_step", default=None
+)
+_log_page_index: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "log_page_index", default=None
+)
+_log_page_hint: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "log_page_hint", default=None
+)
 
 
 def _use_color() -> bool:
@@ -69,14 +84,14 @@ def _c(role: str) -> str:
     # 38;5;N = foreground 256-color
     codes = {
         "dim": "\033[38;5;239m",
-        "tool": "\033[38;5;81m",      # cyan for tool/step names
+        "tool": "\033[38;5;81m",  # cyan for tool/step names
         "llm_call": "\033[38;5;81m",  # same cyan so "LLM call (tool › step)" is readable
-        "run": "\033[38;5;78m",       # green for Run
-        "done_ok": "\033[38;5;78m",   # green for Done / [ok]
+        "run": "\033[38;5;78m",  # green for Run
+        "done_ok": "\033[38;5;78m",  # green for Done / [ok]
         "done_fail": "\033[38;5;203m",  # red for [failed]
-        "duration": "\033[38;5;221m",   # yellow for durations
-        "model": "\033[38;5;245m",    # dim gray for model name
-        "reply": "\033[38;5;246m",    # muted for reply preview
+        "duration": "\033[38;5;221m",  # yellow for durations
+        "model": "\033[38;5;245m",  # dim gray for model name
+        "reply": "\033[38;5;246m",  # muted for reply preview
     }
     return codes.get(role, "")
 
@@ -111,10 +126,10 @@ class LogEvent:
     event_type: str
     timestamp: str
     data: dict[str, Any]
-    
+
     def to_dict(self) -> dict:
         return asdict(self)
-    
+
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), default=str)
 
@@ -134,8 +149,7 @@ class LilithLogger:
         self.console = logging.getLogger("lilith")
         self.console.setLevel(logging.DEBUG)
         self._console_formatter = logging.Formatter(
-            "%(asctime)s │ %(message)s",
-            datefmt="%H:%M:%S"
+            "%(asctime)s │ %(message)s", datefmt="%H:%M:%S"
         )
         if not self.console.handlers:
             handler = logging.StreamHandler()
@@ -158,7 +172,7 @@ class LilithLogger:
         with self._file_lock:
             self._log_file_handle.write(event.to_json() + "\n")
             self._log_file_handle.flush()
-    
+
     def _timestamp(self) -> str:
         return datetime.now().isoformat()
 
@@ -201,20 +215,22 @@ class LilithLogger:
         event = LogEvent(
             event_type="USER_INPUT",
             timestamp=self._timestamp(),
-            data={"message": message[:500]}
+            data={"message": message[:500]},
         )
         self.log_event(event)
         self.console.info(f"User: {message[:100]}{'...' if len(message) > 100 else ''}")
-    
+
     def context_built(self, token_count: int, message_count: int):
         event = LogEvent(
             event_type="CONTEXT_BUILT",
             timestamp=self._timestamp(),
-            data={"tokens": token_count, "messages": message_count}
+            data={"tokens": token_count, "messages": message_count},
         )
         self.log_event(event)
-        self.console.debug(f"📋 Context: {token_count} tokens, {message_count} messages")
-    
+        self.console.debug(
+            f"📋 Context: {token_count} tokens, {message_count} messages"
+        )
+
     def llm_request(self, model: str, is_local: bool, prompt_preview: str = ""):
         self._llm_was_local = is_local
         _llm_ctx.set((time.monotonic(), model))
@@ -224,8 +240,8 @@ class LilithLogger:
             data={
                 "model": model,
                 "is_local": is_local,
-                "prompt_preview": prompt_preview[:200]
-            }
+                "prompt_preview": prompt_preview[:200],
+            },
         )
         self.log_event(event)
         if _log_in_tool.get():
@@ -240,7 +256,7 @@ class LilithLogger:
         self,
         token_count: int,
         has_tool_call: bool,
-        tool_name: str = None,
+        tool_name: str | None = None,
         *,
         duration_seconds: float | None = None,
         page_chars: int | None = None,
@@ -250,7 +266,7 @@ class LilithLogger:
             _llm_ctx.set(None)
         if duration_seconds is not None:
             elapsed = duration_seconds
-            model = (pair[1] if pair else "?")
+            model = pair[1] if pair else "?"
         elif pair is not None:
             start, model = pair
             elapsed = time.monotonic() - start
@@ -265,7 +281,7 @@ class LilithLogger:
                 "has_tool_call": has_tool_call,
                 "tool_name": tool_name,
                 "duration_seconds": round(elapsed, 3),
-            }
+            },
         )
         self.log_event(event)
         pre = self._prefix()
@@ -281,7 +297,9 @@ class LilithLogger:
         elif has_tool_call:
             self.console.info(f"{pre}Agent chose tool: {tool_name}  {dur_colored}")
         else:
-            self.console.info(f"{pre}Agent  {dur_colored}  {_c('model')}[{model}]{_reset()}")
+            self.console.info(
+                f"{pre}Agent  {dur_colored}  {_c('model')}[{model}]{_reset()}"
+            )
 
     def llm_stream_done(self):
         pair = _llm_ctx.get()
@@ -295,8 +313,10 @@ class LilithLogger:
             model = "?"
         dur = _format_duration(elapsed)
         dur_colored = f"{_c('duration')}{dur}{_reset()}"
-        self.console.info(f"{self._prefix()}Agent  took {dur_colored}  {_c('model')}[{model}]{_reset()}")
-    
+        self.console.info(
+            f"{self._prefix()}Agent  took {dur_colored}  {_c('model')}[{model}]{_reset()}"
+        )
+
     def tool_execute(self, tool_name: str, args: dict):
         _log_tool_start.set(time.monotonic())
         _log_in_tool.set(True)
@@ -307,7 +327,7 @@ class LilithLogger:
         event = LogEvent(
             event_type="TOOL_EXECUTE",
             timestamp=self._timestamp(),
-            data={"tool": tool_name, "args": args}
+            data={"tool": tool_name, "args": args},
         )
         self.log_event(event)
         short_args = self._format_tool_args(args)
@@ -347,8 +367,12 @@ class LilithLogger:
             "duration_seconds": round(elapsed, 3),
         }
         if not success and error_reason:
-            data["error_reason"] = (error_reason[:500] if len(error_reason) > 500 else error_reason)
-        event = LogEvent(event_type="TOOL_RESULT", timestamp=self._timestamp(), data=data)
+            data["error_reason"] = (
+                error_reason[:500] if len(error_reason) > 500 else error_reason
+            )
+        event = LogEvent(
+            event_type="TOOL_RESULT", timestamp=self._timestamp(), data=data
+        )
         self.log_event(event)
         dur = _format_duration(elapsed)
         dur_colored = f"{_c('duration')}{dur}{_reset()}"
@@ -356,19 +380,21 @@ class LilithLogger:
             status = "ok"
             status_str = f"{_c('done_ok')}[ok]{_reset()}"
         else:
-            status = f"failed: {_short_reason(error_reason)}" if error_reason else "failed"
+            status = (
+                f"failed: {_short_reason(error_reason)}" if error_reason else "failed"
+            )
             status_str = f"{_c('done_fail')}[failed]{_reset()}"
         self.console.info(
             f"{done_prefix}{_c('done_ok')}✓ Done{_reset()}  {_c('tool')}{tool_name}{_reset()}  "
             f"total {dur_colored}  {result_length} chars  {status_str}"
         )
         self.console.info("")
-    
+
     def final_response(self, response: str):
         event = LogEvent(
             event_type="FINAL_RESPONSE",
             timestamp=self._timestamp(),
-            data={"response": response[:500], "length": len(response)}
+            data={"response": response[:500], "length": len(response)},
         )
         self.log_event(event)
         text = response.strip().replace("\n", " ")
@@ -400,24 +426,24 @@ class LilithLogger:
     def thought(self, content: str):
         if not content:
             return
-        
+
         event = LogEvent(
             event_type="THOUGHT",
             timestamp=self._timestamp(),
-            data={"thought": content[:1000]}
+            data={"thought": content[:1000]},
         )
         self.log_event(event)
         try:
             terminal_width = shutil.get_terminal_size().columns
         except OSError:
             terminal_width = 80
-        
+
         wrap_width = max(terminal_width - 10, 40)
         border_color = "\033[38;5;239m"
         text_color = "\033[38;5;244m\033[3m"
         header_color = "\033[35m\033[1m"
         reset = "\033[0m"
-        
+
         header = f"  {header_color}🧠 LILITH'S THOUGHT LOG{reset}"
         wrapped_lines = []
         for line in content.split("\n"):
@@ -429,9 +455,9 @@ class LilithLogger:
         for line in wrapped_lines:
             output.append(f"  {border_color}│{reset}  {text_color}{line}{reset}")
         output.append(f"  {border_color}╰{'─' * (wrap_width + 2)}{reset}\n")
-        
+
         self.console.info("\n".join(output))
-    
+
     def external_call(self, provider: str, model: str, full_payload: dict):
         timestamp = self._timestamp()
         event = LogEvent(
@@ -440,30 +466,37 @@ class LilithLogger:
             data={
                 "provider": provider,
                 "model": model,
-                "payload_size": len(json.dumps(full_payload))
-            }
+                "payload_size": len(json.dumps(full_payload)),
+            },
         )
         self.log_event(event)
         safe_timestamp = timestamp.replace(":", "-")
         payload_file = self.external_dir / f"{safe_timestamp}_{provider}.json"
         with open(payload_file, "w") as f:
-            json.dump({
-                "timestamp": timestamp,
-                "provider": provider,
-                "model": model,
-                "payload": full_payload
-            }, f, indent=2, default=str)
-        
-        self.console.warning(f"☁️ EXTERNAL: {provider}/{model} → logged to {payload_file.name}")
-    
+            json.dump(
+                {
+                    "timestamp": timestamp,
+                    "provider": provider,
+                    "model": model,
+                    "payload": full_payload,
+                },
+                f,
+                indent=2,
+                default=str,
+            )
+
+        self.console.warning(
+            f"☁️ EXTERNAL: {provider}/{model} → logged to {payload_file.name}"
+        )
+
     def error(self, message: str, *args, exception: Exception | None = None, **kwargs):
         event = LogEvent(
             event_type="ERROR",
             timestamp=self._timestamp(),
             data={
                 "message": message,
-                "exception": str(exception) if exception else None
-            }
+                "exception": str(exception) if exception else None,
+            },
         )
         self.log_event(event)
 
@@ -484,10 +517,10 @@ class LilithLogger:
         event = LogEvent(
             event_type="WARNING",
             timestamp=self._timestamp(),
-            data={"message": message[:500]}
+            data={"message": message[:500]},
         )
         self.log_event(event)
-        
+
         allowed = {"exc_info", "stack_info", "stacklevel", "extra"}
         log_kwargs = {k: v for k, v in kwargs.items() if k in allowed}
         self.console.warning(f"⚠️ {message}", *args, **log_kwargs)
@@ -496,19 +529,17 @@ class LilithLogger:
         event = LogEvent(
             event_type="ERROR",
             timestamp=self._timestamp(),
-            data={"message": message[:500]}
+            data={"message": message[:500]},
         )
         self.log_event(event)
         self.console.exception(f"❌ {message}", *args, **kwargs)
 
     def debug(self, message: str, *args, **kwargs):
         event = LogEvent(
-            event_type="DEBUG",
-            timestamp=self._timestamp(),
-            data={"message": message}
+            event_type="DEBUG", timestamp=self._timestamp(), data={"message": message}
         )
         self.log_event(event)
-        
+
         allowed = {"exc_info", "stack_info", "stacklevel", "extra"}
         log_kwargs = {k: v for k, v in kwargs.items() if k in allowed}
         self.console.debug(message, *args, **log_kwargs)

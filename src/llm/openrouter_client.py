@@ -13,9 +13,16 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
 
 class OpenRouterClient:
-
-    def __init__(self, api_key: str = None, models: list[str] = None):
-        self.models = models if models is not None else (config.openrouter_models or ["openrouter/free"])
+    def __init__(
+        self,
+        api_key: str | None = None,
+        models: list[str] | None = None,
+    ):
+        self.models = (
+            models
+            if models is not None
+            else (config.openrouter_models or ["openrouter/free"])
+        )
         if not self.models:
             self.models = ["openrouter/free"]
         self.api_key = (api_key or config.openrouter_api_key).strip()
@@ -27,7 +34,7 @@ class OpenRouterClient:
         self,
         system_message: str,
         conversation: list[dict],
-        user_message: str = None
+        user_message: str | None = None,
     ) -> str:
         return self.formatter.format(system_message, conversation, user_message)
 
@@ -41,8 +48,8 @@ class OpenRouterClient:
         prompt: str,
         max_tokens: int = 1024,
         temperature: float = 0.7,
-        stop: list[str] = None,
-        stream: bool = False
+        stop: list[str] | None = None,
+        stream: bool = False,
     ):
         messages = [{"role": "user", "content": prompt}]
         payload_base = {
@@ -83,10 +90,14 @@ class OpenRouterClient:
             )
             return result
 
-    async def _generate_stream_fallback(self, payload_base: dict, headers: dict, prompt: str):
+    async def _generate_stream_fallback(
+        self, payload_base: dict, headers: dict, prompt: str
+    ):
         last_error: Exception | None = None
         for model in self.models:
-            logger.llm_request(model=model, is_local=False, prompt_preview=prompt[-200:])
+            logger.llm_request(
+                model=model, is_local=False, prompt_preview=prompt[-200:]
+            )
             payload = {**payload_base, "model": model}
             self.last_model_used = None
             try:
@@ -103,10 +114,14 @@ class OpenRouterClient:
             raise last_error
         raise RuntimeError("No OpenRouter models configured")
 
-    async def _generate_non_stream(self, payload_base: dict, headers: dict, prompt: str):
+    async def _generate_non_stream(
+        self, payload_base: dict, headers: dict, prompt: str
+    ):
         last_error: Exception | None = None
         for model in self.models:
-            logger.llm_request(model=model, is_local=False, prompt_preview=prompt[-200:])
+            logger.llm_request(
+                model=model, is_local=False, prompt_preview=prompt[-200:]
+            )
             payload = {**payload_base, "model": model}
             try:
                 response = await self.client.post(
@@ -128,18 +143,25 @@ class OpenRouterClient:
                     page_chars=len(generated_text),
                 )
                 from src.llm.vllm_client import LLMResponse
+
                 return LLMResponse(
                     text=generated_text,
                     model=self.last_model_used or model,
                     thought="",
-                    tokens_used=tokens_used
+                    tokens_used=tokens_used,
                 )
             except Exception as e:
                 last_error = e
                 if isinstance(e, httpx.HTTPStatusError):
-                    body = getattr(e.response, "text", None) or (e.response.content.decode("utf-8", errors="replace") if e.response.content else "")
+                    body = getattr(e.response, "text", None) or (
+                        e.response.content.decode("utf-8", errors="replace")
+                        if e.response.content
+                        else ""
+                    )
                     if body:
-                        logger.error(f"OpenRouter {model} {e.response.status_code}: {body[:300]}")
+                        logger.error(
+                            f"OpenRouter {model} {e.response.status_code}: {body[:300]}"
+                        )
                     else:
                         logger.error(f"OpenRouter {model} {e.response.status_code}")
                 else:

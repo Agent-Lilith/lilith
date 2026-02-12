@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
 
 CONFIRM_REQUIRED_PREFIX = "CONFIRM_REQUIRED|"
 
@@ -28,7 +27,7 @@ class ToolResult:
     success: bool
     output: str
     error: str = ""
-    
+
     @classmethod
     def ok(cls, output: str) -> "ToolResult":
         return cls(success=True, output=output)
@@ -77,7 +76,7 @@ class ToolRegistry:
         if not isinstance(tool, Tool):
             raise TypeError(f"Expected Tool instance, got {type(tool)}")
         self._tools[tool.name] = tool
-    
+
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
@@ -87,7 +86,7 @@ class ToolRegistry:
     def get_tools_prompt(self) -> str:
         if not self._tools:
             return "No tools available yet."
-        
+
         lines = ["Available tools:"]
         for tool in self._tools.values():
             lines.append(tool.get_schema())

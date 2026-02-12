@@ -1,9 +1,10 @@
 """Tasks read: list task lists, list tasks, get task by id."""
 
+from src.core.logger import logger
 from src.core.prompts import get_tool_description, get_tool_examples
 from src.services.google_service import GoogleService
-from src.core.logger import logger
 from src.tools.base import Tool, ToolResult
+
 
 def _format_task_summary(task: dict) -> str:
     title = task.get("title") or "(No title)"
@@ -49,21 +50,25 @@ class TasksReadTool(Tool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(
-        self,
-        action: str,
-        list_id: str = "",
-        task_id: str = "",
-        show_completed: str = "true",
-    ) -> ToolResult:
-        logger.tool_execute(self.name, {
-            "action": action, 
-            "list_id": list_id, 
-            "task_id": task_id, 
-            "show_completed": show_completed
-        })
+    async def execute(self, **kwargs: object) -> ToolResult:
+        action = str(kwargs.get("action", ""))
+        list_id = str(kwargs.get("list_id", ""))
+        task_id = str(kwargs.get("task_id", ""))
+        show_completed = str(kwargs.get("show_completed", "true"))
+        logger.tool_execute(
+            self.name,
+            {
+                "action": action,
+                "list_id": list_id,
+                "task_id": task_id,
+                "show_completed": show_completed,
+            },
+        )
         import asyncio
-        return await asyncio.to_thread(self._sync_execute, action, list_id, task_id, show_completed)
+
+        return await asyncio.to_thread(
+            self._sync_execute, action, list_id, task_id, show_completed
+        )
 
     def _sync_execute(
         self,
@@ -73,7 +78,9 @@ class TasksReadTool(Tool):
         show_completed: str = "true",
     ) -> ToolResult:
         if not self._service.is_connected:
-            return ToolResult.fail("Tasks not connected. User should run: python -m src.main google-auth")
+            return ToolResult.fail(
+                "Tasks not connected. User should run: python -m src.main google-auth"
+            )
 
         try:
             if action == "list_lists":
@@ -88,17 +95,23 @@ class TasksReadTool(Tool):
                         if lst.get("id") == self._service.default_task_list_id:
                             marks.append("default")
                         suffix = f" [{', '.join(marks)}]" if marks else ""
-                        lines.append(f"- {lst.get('title', 'No name')} — id: {lst.get('id')}{suffix}")
+                        lines.append(
+                            f"- {lst.get('title', 'No name')} — id: {lst.get('id')}{suffix}"
+                        )
                     out = "\n".join(lines)
                 return ToolResult.ok(out)
 
             if action == "list_tasks":
                 lid = self._service.get_task_list_id(list_id)
                 show = show_completed.strip().lower() not in ("false", "0", "no")
-                
-                tasks_result = self._service.tasks.tasks().list(tasklist=lid, showCompleted=show).execute()
+
+                tasks_result = (
+                    self._service.tasks.tasks()
+                    .list(tasklist=lid, showCompleted=show)
+                    .execute()
+                )
                 tasks = tasks_result.get("items", [])
-                
+
                 if not tasks:
                     out = "No tasks in that list."
                 else:
@@ -108,17 +121,23 @@ class TasksReadTool(Tool):
             if action == "get_task":
                 if not task_id:
                     return ToolResult.fail("get_task requires task_id")
-                
+
                 lid = self._service.get_task_list_id(list_id)
-                task = self._service.tasks.tasks().get(tasklist=lid, task=task_id.strip()).execute()
-                
+                task = (
+                    self._service.tasks.tasks()
+                    .get(tasklist=lid, task=task_id.strip())
+                    .execute()
+                )
+
                 if not task:
                     return ToolResult.fail("Task not found.")
-                
+
                 out = _format_task_full(task)
                 return ToolResult.ok(out)
 
-            return ToolResult.fail(f"Unknown action: {action}. Use list_lists, list_tasks, or get_task.")
+            return ToolResult.fail(
+                f"Unknown action: {action}. Use list_lists, list_tasks, or get_task."
+            )
         except Exception as e:
             logger.error(f"Tasks read failed: {e}", e)
             return ToolResult.fail(str(e))

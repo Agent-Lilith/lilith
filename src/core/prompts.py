@@ -1,8 +1,7 @@
 """Load and compose prompts from prompts/ (fragment list, substitution, validation)."""
 
-import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from src.core.config import config
 from src.core.logger import logger
@@ -33,7 +32,9 @@ def load_system_fragments() -> str:
     return "\n\n".join(parts)
 
 
-def build_system_prompt(get_tools_text: Callable[[], str], get_tool_examples_text: Callable[[], str]) -> str:
+def build_system_prompt(
+    get_tools_text: Callable[[], str], get_tool_examples_text: Callable[[], str]
+) -> str:
     composed = load_system_fragments()
     composed = composed.replace("{tools}", get_tools_text())
     examples_block = get_tool_examples_text()
@@ -71,9 +72,11 @@ def load_worker_prompt() -> str:
 
 def render_worker_prompt(task_description: str, instruction: str, data: str) -> str:
     template = load_worker_prompt()
-    return template.replace("{task_description}", task_description).replace(
-        "{instruction}", instruction
-    ).replace("{data}", data)
+    return (
+        template.replace("{task_description}", task_description)
+        .replace("{instruction}", instruction)
+        .replace("{data}", data)
+    )
 
 
 _TOOL_CACHE: dict[str, tuple[str, list[str]]] = {}

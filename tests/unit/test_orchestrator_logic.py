@@ -1,8 +1,10 @@
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
+
 from src.orchestrators.search.orchestrator import UniversalSearchOrchestrator
-from src.contracts.mcp_search_v1 import SearchResultV1
 from src.orchestrators.search.router import RoutingDecision
+
 
 class TestOrchestratorRefinement:
     @pytest.fixture
@@ -29,12 +31,12 @@ class TestOrchestratorRefinement:
                 source="browser_history",
                 methods=["structured"],
                 query="test",
-                filters=[{"field": "date", "operator": "eq", "value": "2024-01-01"}]
+                filters=[{"field": "date", "operator": "eq", "value": "2024-01-01"}],
             )
         ]
 
         should_refine, reason = orchestrator._should_refine(results, intent, decisions)
-        
+
         assert should_refine is False
         assert reason == ""
 
@@ -50,15 +52,12 @@ class TestOrchestratorRefinement:
         # Routing decision without filters
         decisions = [
             RoutingDecision(
-                source="browser_history",
-                methods=["vector"],
-                query="test",
-                filters=[]
+                source="browser_history", methods=["vector"], query="test", filters=[]
             )
         ]
 
         should_refine, reason = orchestrator._should_refine(results, intent, decisions)
-        
+
         assert should_refine is True
         assert reason == "no_results"
 
@@ -76,11 +75,11 @@ class TestOrchestratorRefinement:
                 source="browser_history",
                 methods=["structured"],
                 query="test",
-                filters=[{"field": "date", "operator": "eq", "value": "2024-01-01"}]
+                filters=[{"field": "date", "operator": "eq", "value": "2024-01-01"}],
             )
         ]
 
         should_refine, reason = orchestrator._should_refine(results, intent, decisions)
-        
+
         assert should_refine is True
         assert reason == "no_results"

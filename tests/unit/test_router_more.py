@@ -1,19 +1,22 @@
-import pytest
+from datetime import datetime
 from unittest.mock import MagicMock, patch
-from datetime import datetime, date
 from zoneinfo import ZoneInfo
+
+import pytest
+
+from src.contracts.mcp_search_v1 import FilterSpec, SearchCapabilities, SourceClass
 from src.orchestrators.search.router import RetrievalRouter
-from src.contracts.mcp_search_v1 import SearchCapabilities, SourceClass, FilterSpec
+
 
 class TestRouterLogic:
     @pytest.fixture
     def capabilities(self):
         registry = MagicMock()
-        
+
         # Mock personal sources
         registry.personal_sources.return_value = ["email", "calendar"]
         registry.all_sources.return_value = ["email", "calendar", "web"]
-        
+
         # Mock get() behavior
         def get_caps(name):
             if name == "email":
@@ -21,23 +24,30 @@ class TestRouterLogic:
                     source_name="email",
                     source_class=SourceClass.PERSONAL,
                     supported_methods=["structured", "fulltext"],
-                    supported_filters=[FilterSpec(name="from_email", type="string", operators=["contains"])]
+                    supported_filters=[
+                        FilterSpec(
+                            name="from_email", type="string", operators=["contains"]
+                        )
+                    ],
                 )
             if name == "calendar":
                 return SearchCapabilities(
                     source_name="calendar",
                     source_class=SourceClass.PERSONAL,
                     supported_methods=["structured"],
-                    supported_filters=[FilterSpec(name="date_after", type="date", operators=["gte"])]
+                    supported_filters=[
+                        FilterSpec(name="date_after", type="date", operators=["gte"])
+                    ],
                 )
             if name == "web":
                 return SearchCapabilities(
                     source_name="web",
                     source_class=SourceClass.WEB,
                     supported_methods=["vector"],
-                    supported_filters=[]
+                    supported_filters=[],
                 )
             return None
+
         registry.get.side_effect = get_caps
         return registry
 
@@ -69,13 +79,13 @@ class TestRouterLogic:
         """Test extraction of email-specific filters."""
         intent = {
             "entities": [{"role": "sender", "name": "alice@example.com"}],
-            "complexity": "simple"
+            "complexity": "simple",
         }
         plan = router.route(intent, "Email from alice@example.com")
-        
+
         email_decision = next(d for d in plan.decisions if d.source == "email")
         filters = email_decision.filters
-        
+
         assert len(filters) == 1
         assert filters[0]["field"] == "from_email"
         assert filters[0]["value"] == "alice@example.com"
@@ -86,20 +96,22 @@ class TestRouterLogic:
         """Test 'today' filter resolution."""
         mock_config.user_timezone = "UTC"
         fixed_now = datetime(2025, 5, 20, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
-        
+
         # Setup datetime mock to handle timezone arg or no arg
         def now_side_effect(tz=None):
             return fixed_now.astimezone(tz) if tz else fixed_now
-            
+
         mock_datetime.now.side_effect = now_side_effect
 
         intent = {"temporal": "today", "complexity": "simple"}
         plan = router.route(intent, "What happened today?")
-        
+
         # Calendar supports date_after
         cal_decision = next((d for d in plan.decisions if d.source == "calendar"), None)
         if cal_decision:
-            f = next((f for f in cal_decision.filters if f["field"] == "date_after"), None)
+            f = next(
+                (f for f in cal_decision.filters if f["field"] == "date_after"), None
+            )
             assert f is not None
             assert f["value"] == "2025-05-20"
 

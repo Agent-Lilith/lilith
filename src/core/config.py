@@ -1,8 +1,9 @@
 """Configuration from environment variables (.env)."""
 
 import os
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -43,6 +44,12 @@ class Config:
     @classmethod
     def load(cls) -> "Config":
         project_root = Path(__file__).parent.parent.parent
+        agents_dir = project_root.parent
+
+        def mcp_args(env_dir: str, default_subdir: str) -> list[str]:
+            path = os.getenv(env_dir) or str(agents_dir / default_subdir)
+            return ["--directory", path, "run", "mcp"]
+
         return cls(
             project_root=project_root,
             data_dir=project_root / "data",
@@ -50,31 +57,45 @@ class Config:
             prompts_dir=project_root / "prompts",
             soul_file=project_root / "prompts" / "soul.md",
             vllm_url=os.getenv("VLLM_URL", "http://localhost:6001"),
-            vllm_model=os.getenv("VLLM_MODEL", "/models/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"),
+            vllm_model=os.getenv(
+                "VLLM_MODEL", "/models/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
+            ),
             searxng_url=os.getenv("SEARXNG_URL", "http://localhost:6002"),
             flaresolverr_url=os.getenv("FLARESOLVERR_URL", "http://localhost:6003"),
             crawl4ai_url=os.getenv("CRAWL4AI_URL", "http://localhost:6004"),
             telegram_token=os.getenv("TELEGRAM_TOKEN", ""),
-            telegram_allowed_users=[int(uid.strip()) for uid in os.getenv("TELEGRAM_ALLOWED_USERS", "").split(",") if uid.strip()],
+            telegram_allowed_users=[
+                int(uid.strip())
+                for uid in os.getenv("TELEGRAM_ALLOWED_USERS", "").split(",")
+                if uid.strip()
+            ],
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
-            openrouter_models=[m.strip() for m in os.getenv("OPENROUTER_MODELS", "openrouter/free").split(",") if m.strip()],
+            openrouter_models=[
+                m.strip()
+                for m in os.getenv("OPENROUTER_MODELS", "openrouter/free").split(",")
+                if m.strip()
+            ],
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             google_client_id=os.getenv("GOOGLE_CLIENT_ID", ""),
             google_client_secret=os.getenv("GOOGLE_CLIENT_SECRET", ""),
-            google_calendar_tokens_path=project_root / "data" / "google_calendar_tokens.json",
-            google_calendar_default_id=os.getenv("GOOGLE_CALENDAR_DEFAULT_ID", "primary"),
+            google_calendar_tokens_path=project_root
+            / "data"
+            / "google_calendar_tokens.json",
+            google_calendar_default_id=os.getenv(
+                "GOOGLE_CALENDAR_DEFAULT_ID", "primary"
+            ),
             user_timezone=os.getenv("USER_TIMEZONE", os.getenv("TZ", "UTC")),
             whisper_url=os.getenv("WHISPER_URL", "http://localhost:6002"),
             agent_max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "15")),
-            mcp_email_command=os.getenv("MCP_EMAIL_COMMAND", ""),
-            mcp_email_args=[a.strip() for a in os.getenv("MCP_EMAIL_ARGS", "").split(",") if a.strip()],
+            mcp_email_command=os.getenv("MCP_EMAIL_COMMAND", "uv"),
+            mcp_email_args=mcp_args("MCP_EMAIL_DIR", "lilith-emails"),
             mcp_email_account_id=int(os.getenv("MCP_EMAIL_ACCOUNT_ID", "1")),
-            mcp_browser_command=os.getenv("MCP_BROWSER_COMMAND", ""),
-            mcp_browser_args=[a.strip() for a in os.getenv("MCP_BROWSER_ARGS", "").split(",") if a.strip()],
-            mcp_whatsapp_command=os.getenv("MCP_WHATSAPP_COMMAND", ""),
-            mcp_whatsapp_args=[a.strip() for a in os.getenv("MCP_WHATSAPP_ARGS", "").split(",") if a.strip()],
+            mcp_browser_command=os.getenv("MCP_BROWSER_COMMAND", "uv"),
+            mcp_browser_args=mcp_args("MCP_BROWSER_DIR", "lilith-browser"),
+            mcp_whatsapp_command=os.getenv("MCP_WHATSAPP_COMMAND", "uv"),
+            mcp_whatsapp_args=mcp_args("MCP_WHATSAPP_DIR", "lilith-whatsapp"),
         )
-    
+
     def validate(self) -> list[str]:
         errors = []
         if not self.prompts_dir.exists():

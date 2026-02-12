@@ -16,7 +16,7 @@ import re
 import time
 from typing import Any
 
-from src.contracts.mcp_search_v1 import SearchResultV1, SourceClass
+from src.contracts.mcp_search_v1 import SearchResultV1
 from src.core.logger import logger
 from src.core.prompts import load_search_prompt
 from src.core.worker import current_llm_client
@@ -58,7 +58,7 @@ def _default_query_from_context(context: str) -> str:
         return ""
     for prefix in ("User:", "Assistant:", "user:", "assistant:"):
         if first_line.startswith(prefix):
-            first_line = first_line[len(prefix):].strip()
+            first_line = first_line[len(prefix) :].strip()
             break
     return first_line[:200] if first_line else ""
 
@@ -89,9 +89,14 @@ class UniversalSearchOrchestrator:
             return client
         return create_client()
 
-    async def _generate(self, prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
+    async def _generate(
+        self, prompt: str, max_tokens: int = 800, temperature: float = 0.2
+    ) -> str:
         client = self._get_llm()
-        stop = getattr(getattr(client, "formatter", None), "stop_tokens", None) or ["<|eot_id|>", "<|end_of_text|>"]
+        stop = getattr(getattr(client, "formatter", None), "stop_tokens", None) or [
+            "<|eot_id|>",
+            "<|end_of_text|>",
+        ]
         response = await client.generate(
             prompt=prompt,
             max_tokens=max_tokens,
@@ -142,9 +147,10 @@ class UniversalSearchOrchestrator:
                 all_errors.append(f"{decisions[i].source}: {result!s}")
                 logger.warning("Search failed for %s: %s", decisions[i].source, result)
                 continue
-            results, errors = result
-            all_results.extend(results)
-            all_errors.extend(errors)
+            if isinstance(result, tuple):
+                results, errors = result
+                all_results.extend(results)
+                all_errors.extend(errors)
 
         return all_results, all_errors
 
@@ -168,7 +174,9 @@ class UniversalSearchOrchestrator:
                 )
                 logger.debug(
                     "MCP search %s: %s results, methods=%s",
-                    source, len(results), decision.methods,
+                    source,
+                    len(results),
+                    decision.methods,
                 )
                 return results, errors
             except Exception as e:
@@ -188,7 +196,9 @@ class UniversalSearchOrchestrator:
                 )
                 logger.debug(
                     "Direct search %s: %s results, methods=%s",
-                    source, len(results), decision.methods,
+                    source,
+                    len(results),
+                    decision.methods,
                 )
                 return results, errors
             except Exception as e:
@@ -228,7 +238,7 @@ class UniversalSearchOrchestrator:
                 scores.append(0.0)
         avg_score = sum(scores) / len(scores) if scores else 0.0
         if avg_score < 0.7:
-             return True, "low_confidence"
+            return True, "low_confidence"
 
         # Trigger 3: Only one source returned results (missing cross-source context)
         # Check if intent implies multiple sources (e.g. source_hints has >1 item)
@@ -262,45 +272,56 @@ class UniversalSearchOrchestrator:
                 methods = ["vector"]
                 if self._capabilities.can_handle(d.source, "structured"):
                     methods.append("structured")
-                
-                refined.append(RoutingDecision(
-                    source=d.source,
-                    methods=methods,
-                    query=d.query,
-                    filters=[],  # drop all filters
-                ))
+
+                refined.append(
+                    RoutingDecision(
+                        source=d.source,
+                        methods=methods,
+                        query=d.query,
+                        filters=[],  # drop all filters
+                    )
+                )
 
         elif reason == "low_source_coverage":
             # Retry missing sources
             actual_sources = {r.source for r in results}
             for d in previous_decisions:
                 if d.source not in actual_sources:
-                    refined.append(RoutingDecision(
-                        source=d.source,
-                        methods=d.methods,
-                        query=d.query,
-                        filters=[],  # relax filters
-                    ))
+                    refined.append(
+                        RoutingDecision(
+                            source=d.source,
+                            methods=d.methods,
+                            query=d.query,
+                            filters=[],  # relax filters
+                        )
+                    )
 
         elif reason == "low_confidence":
             # Try different methods
             for d in previous_decisions:
                 new_methods = []
-                if "fulltext" not in d.methods and self._capabilities.can_handle(d.source, "fulltext"):
+                if "fulltext" not in d.methods and self._capabilities.can_handle(
+                    d.source, "fulltext"
+                ):
                     new_methods.append("fulltext")
-                if "vector" not in d.methods and self._capabilities.can_handle(d.source, "vector"):
+                if "vector" not in d.methods and self._capabilities.can_handle(
+                    d.source, "vector"
+                ):
                     new_methods.append("vector")
                 if new_methods:
-                    refined.append(RoutingDecision(
-                        source=d.source,
-                        methods=new_methods,
-                        query=d.query,
-                        filters=d.filters,
-                    ))
+                    refined.append(
+                        RoutingDecision(
+                            source=d.source,
+                            methods=new_methods,
+                            query=d.query,
+                            filters=d.filters,
+                        )
+                    )
 
         logger.info(
             "Refinement (reason=%s): %s additional decisions",
-            reason, len(refined),
+            reason,
+            len(refined),
         )
         return refined[:4]  # Cap at 4 refinement steps
 
@@ -327,7 +348,9 @@ class UniversalSearchOrchestrator:
 
         # 1. Build context
         if user_message and conversation_context:
-            context = (user_message.strip() + "\n\n" + conversation_context.strip()).strip()
+            context = (
+                user_message.strip() + "\n\n" + conversation_context.strip()
+            ).strip()
         else:
             context = (user_message or conversation_context or "").strip()
 
@@ -335,7 +358,15 @@ class UniversalSearchOrchestrator:
             return UniversalSearchResponse(
                 results=[],
                 errors=["No context provided for search."],
-                meta={"query": "", "sources_queried": [], "methods_used": [], "iterations": 0, "total_results": 0, "complexity": "simple", "timing_ms": {}},
+                meta={
+                    "query": "",
+                    "sources_queried": [],
+                    "methods_used": [],
+                    "iterations": 0,
+                    "total_results": 0,
+                    "complexity": "simple",
+                    "timing_ms": {},
+                },
             )
 
         query = _default_query_from_context(context)
@@ -364,7 +395,15 @@ class UniversalSearchOrchestrator:
             return UniversalSearchResponse(
                 results=[],
                 errors=["No search backends available for this query"],
-                meta={"query": query, "sources_queried": [], "methods_used": [], "iterations": 0, "total_results": 0, "complexity": routing_plan.complexity, "timing_ms": timing_ms},
+                meta={
+                    "query": query,
+                    "sources_queried": [],
+                    "methods_used": [],
+                    "iterations": 0,
+                    "total_results": 0,
+                    "complexity": routing_plan.complexity,
+                    "timing_ms": timing_ms,
+                },
             )
 
         # 4. Complexity gate
@@ -387,7 +426,9 @@ class UniversalSearchOrchestrator:
         if do_refinement:
             for _ in range(self._max_refinement_rounds):
                 should_refine, reason = self._should_refine(
-                    all_results, intent, routing_plan.decisions,
+                    all_results,
+                    intent,
+                    routing_plan.decisions,
                 )
                 if not should_refine:
                     # Note when we have explicit filters with no results
@@ -400,12 +441,18 @@ class UniversalSearchOrchestrator:
                 iterations += 1
                 t0 = time.monotonic()
                 refined_decisions = await self._refine(
-                    context, intent, all_results, routing_plan.decisions, reason,
+                    context,
+                    intent,
+                    all_results,
+                    routing_plan.decisions,
+                    reason,
                 )
                 if not refined_decisions:
                     break
 
-                refined_results, refined_errors = await self._execute_routing(refined_decisions)
+                refined_results, refined_errors = await self._execute_routing(
+                    refined_decisions
+                )
                 all_results.extend(refined_results)
                 errors.extend(refined_errors)
                 timing_ms["refinement"] = round((time.monotonic() - t0) * 1000, 1)
@@ -426,7 +473,11 @@ class UniversalSearchOrchestrator:
 
         logger.info(
             "Search complete: %s results | sources=%s | methods=%s | iterations=%s | total=%.0fms",
-            len(ranked), sources_queried, methods_used, iterations, timing_ms["total"],
+            len(ranked),
+            sources_queried,
+            methods_used,
+            iterations,
+            timing_ms["total"],
         )
 
         return UniversalSearchResponse(
@@ -454,7 +505,18 @@ class UniversalSearchOrchestrator:
             return False
 
         # Explicitly personal
-        if any(w in hints_str for w in ("email", "calendar", "tasks", "browser", "history", "bookmark")):
+        if any(
+            w in hints_str
+            for w in (
+                "email",
+                "calendar",
+                "tasks",
+                "browser_history",
+                "browser_bookmarks",
+                "history",
+                "bookmark",
+            )
+        ):
             return True
 
         # Default: personal (assistant is primarily a personal data tool)

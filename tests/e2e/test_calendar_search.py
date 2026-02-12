@@ -1,10 +1,13 @@
-import pytest
 import logging
+
+import pytest
+
 from src.core.agent import Agent
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 @pytest.mark.asyncio
 async def test_calendar_lifecycle(agent: Agent):
@@ -17,18 +20,27 @@ async def test_calendar_lifecycle(agent: Agent):
     5. Delete the meeting
     6. Search to verify deletion
     """
-    unique_client = "TestClient_X_99" # Unique name to avoid collisions
-    
+    unique_client = "TestClient_X_99"  # Unique name to avoid collisions
+
     # 1. CREATE
     logger.info("Step 1: Creating meeting...")
-    create_query = f"Schedule a meeting with '{unique_client}' for next Friday at 2pm to 3pm."
+    create_query = (
+        f"Schedule a meeting with '{unique_client}' for next Friday at 2pm to 3pm."
+    )
     result = await agent.chat(create_query)
-    assert "confirm" in result.response.lower() or "scheduled" in result.response.lower() or "created" in result.response.lower()
-    
+    assert (
+        "confirm" in result.response.lower()
+        or "scheduled" in result.response.lower()
+        or "created" in result.response.lower()
+    )
+
     if result.pending_confirm:
         logger.info("Confirming creation...")
         result = await agent.chat("yes")
-        assert "scheduled" in result.response.lower() or "created" in result.response.lower()
+        assert (
+            "scheduled" in result.response.lower()
+            or "created" in result.response.lower()
+        )
 
     # 2. SEARCH (Verify Creation)
     logger.info("Step 2: Searching for meeting...")
@@ -50,7 +62,7 @@ async def test_calendar_lifecycle(agent: Agent):
     verify_query = f"Check schedule for next Friday regarding {unique_client}"
     result = await agent.chat(verify_query)
     assert "3" in result.response or "15:00" in result.response
-    
+
     # 5. DELETE
     # Clear history to stay under 6k context limit.
     agent.clear_history()
@@ -60,7 +72,9 @@ async def test_calendar_lifecycle(agent: Agent):
     result = await agent.chat(delete_query)
     if result.pending_confirm:
         result = await agent.chat("yes")
-    assert "cancelled" in result.response.lower() or "deleted" in result.response.lower()
+    assert (
+        "cancelled" in result.response.lower() or "deleted" in result.response.lower()
+    )
 
     # 6. VERIFY DELETION
     logger.info("Step 6: Verifying deletion...")
@@ -68,4 +82,3 @@ async def test_calendar_lifecycle(agent: Agent):
     result = await agent.chat(final_query)
     negatives = ["no", "none", "don't have", "do not have", "free", "clear"]
     assert any(n in result.response.lower() for n in negatives)
-

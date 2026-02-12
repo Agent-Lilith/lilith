@@ -4,14 +4,13 @@ Handles credential loading, refreshing, and building of API service objects.
 """
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo
 
-from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-from googleapiclient.discovery import build, Resource
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import Resource, build
 
 from src.core.config import config
 from src.core.logger import logger
@@ -47,7 +46,7 @@ def _load_credentials(path: Path) -> tuple[Credentials | None, str, str]:
         return None, config.google_calendar_default_id, ""
     with open(path) as f:
         data = json.load(f)
-    
+
     creds = Credentials(
         token=data.get("access_token"),
         refresh_token=data.get("refresh_token"),
@@ -61,10 +60,10 @@ def _load_credentials(path: Path) -> tuple[Credentials | None, str, str]:
             creds.expiry = datetime.fromisoformat(data["expiry"].replace("Z", "+00:00"))
         except (ValueError, TypeError):
             pass
-            
+
     default_calendar_id = data.get("default_calendar_id", "primary")
     default_task_list_id = data.get("default_task_list_id", "")
-    
+
     return creds, default_calendar_id, default_task_list_id
 
 
@@ -76,22 +75,29 @@ class GoogleService:
         self._creds: Credentials | None = None
         self.default_calendar_id: str = config.google_calendar_default_id
         self.default_task_list_id: str = ""
-        
+
         self._calendar_api: Resource | None = None
         self._tasks_api: Resource | None = None
-        
+
         self._reload_credentials()
 
     def _reload_credentials(self) -> None:
         """Loads credentials from disk and refreshes them if necessary."""
-        self._creds, self.default_calendar_id, self.default_task_list_id = _load_credentials(self._token_path)
-        
+        self._creds, self.default_calendar_id, self.default_task_list_id = (
+            _load_credentials(self._token_path)
+        )
+
         if self._creds and self._creds.valid:
             self._build_api_resources()
         elif self._creds and self._creds.expired and self._creds.refresh_token:
             try:
                 self._creds.refresh(Request())
-                _save_tokens(self._token_path, self._creds, self.default_calendar_id, self.default_task_list_id)
+                _save_tokens(
+                    self._token_path,
+                    self._creds,
+                    self.default_calendar_id,
+                    self.default_task_list_id,
+                )
                 self._build_api_resources()
                 logger.info("Google API token refreshed.")
             except Exception as e:
@@ -106,8 +112,12 @@ class GoogleService:
         if not self._creds:
             return
         try:
-            self._calendar_api = build("calendar", "v3", credentials=self._creds, cache_discovery=False)
-            self._tasks_api = build("tasks", "v1", credentials=self._creds, cache_discovery=False)
+            self._calendar_api = build(
+                "calendar", "v3", credentials=self._creds, cache_discovery=False
+            )
+            self._tasks_api = build(
+                "tasks", "v1", credentials=self._creds, cache_discovery=False
+            )
         except Exception as e:
             logger.error(f"Failed to build Google API resources: {e}")
             self._calendar_api = None
@@ -121,7 +131,9 @@ class GoogleService:
     @property
     def calendar(self) -> Resource:
         if not self._calendar_api:
-            raise RuntimeError("Google Calendar API not available. Please authenticate.")
+            raise RuntimeError(
+                "Google Calendar API not available. Please authenticate."
+            )
         return self._calendar_api
 
     @property
@@ -142,25 +154,31 @@ class GoogleService:
         lid = (task_list_id or self.default_task_list_id or "").strip()
         if lid:
             return lid
-        
+
         # If no ID is provided and no default is set, find the first list.
-        task_lists = self.tasks.tasklists().list(maxResults=1).execute().get("items", [])
+        task_lists = (
+            self.tasks.tasklists().list(maxResults=1).execute().get("items", [])
+        )
         if task_lists:
             return task_lists[0]["id"]
-        
-        raise RuntimeError("No task list available. Create one in Google Tasks or set a default via google-auth.")
+
+        raise RuntimeError(
+            "No task list available. Create one in Google Tasks or set a default via google-auth."
+        )
 
 
-def range_preset_to_timebounds(range_preset: str, tz_name: str | None = None) -> tuple[datetime, datetime]:
+def range_preset_to_timebounds(
+    range_preset: str, tz_name: str | None = None
+) -> tuple[datetime, datetime]:
     """
     Return (time_min, time_max) in UTC for a given range_preset in the user's timezone.
     Supports: today, yesterday, tomorrow, this_week, end_of_week, next_7_days, next_14_days, this_month, next_month.
     """
     tz_name = tz_name or config.user_timezone or "UTC"
     try:
-        tz = ZoneInfo(tz_name)
+        tz: tzinfo = ZoneInfo(tz_name)
     except Exception:
-        tz = timezone.utc
+        tz = UTC
     now = datetime.now(tz)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -202,4 +220,4 @@ def range_preset_to_timebounds(range_preset: str, tz_name: str | None = None) ->
         start = today
         end = today + timedelta(days=7)
 
-    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+    return start.astimezone(UTC), end.astimezone(UTC)

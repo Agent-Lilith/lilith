@@ -4,16 +4,17 @@ import asyncio
 import html as html_module
 import re
 import time
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from curl_cffi.requests import AsyncSession as CurlCffiSession
+
 from src.core.config import config
 from src.core.logger import logger
 from src.core.prompts import get_tool_description, get_tool_examples
 from src.core.worker import get_worker
 from src.tools.base import Tool, ToolResult
-
-from curl_cffi.requests import AsyncSession as CurlCffiSession
 
 _read_page_cache: dict[str, tuple[str, float]] = {}
 _READ_PAGE_CACHE_TTL_S = 300
@@ -36,12 +37,16 @@ _CF_INDICATORS = (
     "verifying you are human",
 )
 
-_JS_SKELETON = re.compile(r"<div\s+id=[\"'](?:root|app|__next|main)[\"'][^>]*>\s*</div>", re.I)
+_JS_SKELETON = re.compile(
+    r"<div\s+id=[\"'](?:root|app|__next|main)[\"'][^>]*>\s*</div>", re.I
+)
 _JS_INITIAL_STATE = re.compile(r"<script[^>]*>[\s\S]*?__INITIAL_STATE__\s*=", re.I)
 _JS_NOSCRIPT = re.compile(r"<noscript[^>]*>[\s\S]*?enable\s+javascript", re.I)
 
 
-def _is_cloudflare_block(html_content: str | None, status_code: int | None = None) -> bool:
+def _is_cloudflare_block(
+    html_content: str | None, status_code: int | None = None
+) -> bool:
     if status_code == 403:
         return True
     if not html_content:
@@ -87,7 +92,9 @@ def _html_to_text(html_content: str, max_chars: int = _MAX_CONTENT_LEN) -> str:
 
 async def _try_httpx(url: str) -> tuple[str | None, str]:
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=_HTTPX_TIMEOUT) as client:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=_HTTPX_TIMEOUT
+        ) as client:
             r = await client.get(url, headers={"User-Agent": _DEFAULT_UA})
             html = (r.text or "") if r.status_code == 200 else ""
             if r.status_code == 200 and _has_real_content(html):
@@ -138,7 +145,7 @@ async def _try_crawl4ai(
     user_agent: str | None = None,
 ) -> tuple[str | None, bool]:
     """Returns (markdown_or_html or None, hit_cloudflare)."""
-    payload = {
+    payload: dict[str, Any] = {
         "urls": [url],
         "browser_config": {
             "user_agent": user_agent or _DEFAULT_UA,
@@ -204,7 +211,9 @@ async def _try_flaresolverr(url: str) -> tuple[str | None, dict, str | None]:
     return (html, cookies, user_agent)
 
 
-async def _fetched_then_summarize(t0: float, url: str, topic: str, text: str) -> ToolResult:
+async def _fetched_then_summarize(
+    t0: float, url: str, topic: str, text: str
+) -> ToolResult:
     logger.tool_page_fetched(time.monotonic() - t0)
     return await _summarize_and_return(url, topic, text)
 
@@ -240,7 +249,9 @@ async def _fetch_one_url(url: str, topic: str) -> ToolResult:
             return await _fetched_then_summarize(t0, url, topic, content)
 
         if cookies or user_agent:
-            markdown, _ = await _try_crawl4ai(url, cookies=cookies or None, user_agent=user_agent)
+            markdown, _ = await _try_crawl4ai(
+                url, cookies=cookies or None, user_agent=user_agent
+            )
             if markdown and markdown.strip():
                 return await _fetched_then_summarize(t0, url, topic, markdown)
         if fs_html and _has_real_content(fs_html, min_text_len=100):
@@ -289,13 +300,19 @@ class ReadPageTool(Tool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(self, url: str, topic: str = "Summarize the key information") -> ToolResult:
+    async def execute(self, **kwargs: object) -> ToolResult:
+        url = str(kwargs.get("url", ""))
+        topic = str(kwargs.get("topic", "Summarize the key information"))
         logger.tool_execute(self.name, {"url": url, "topic": topic})
         url_key = url.strip().rstrip("/")
         now = time.time()
         if url_key in _read_page_cache:
             cached_text, cached_at = _read_page_cache[url_key]
-            if (now - cached_at) < _READ_PAGE_CACHE_TTL_S and cached_text and not cached_text.strip().startswith(_WORKER_ERROR_PREFIX):
+            if (
+                (now - cached_at) < _READ_PAGE_CACHE_TTL_S
+                and cached_text
+                and not cached_text.strip().startswith(_WORKER_ERROR_PREFIX)
+            ):
                 logger.tool_result(self.name, len(cached_text), True)
                 return ToolResult.ok(f"(cached) {cached_text}")
         result = await _fetch_one_url(url, topic)
@@ -346,7 +363,9 @@ class ReadPagesTool(Tool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(self, urls: str, topic: str = "Summarize the key information") -> ToolResult:
+    async def execute(self, **kwargs: object) -> ToolResult:
+        urls = str(kwargs.get("urls", ""))
+        topic = str(kwargs.get("topic", "Summarize the key information"))
         url_list = _parse_urls(urls)
         if not url_list:
             msg = "read_pages requires at least one valid URL in urls."

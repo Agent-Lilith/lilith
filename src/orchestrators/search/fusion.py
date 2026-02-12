@@ -5,7 +5,6 @@ LLM rerank is kept only as an optional tie-breaker for top results.
 """
 
 import logging
-from typing import Any
 
 from src.contracts.mcp_search_v1 import SearchResultV1, SourceClass
 
@@ -72,10 +71,12 @@ def deduplicate_results(results: list[SearchResultV1]) -> list[SearchResultV1]:
                 if method not in merged_scores or score > merged_scores[method]:
                     merged_scores[method] = score
             merged_methods = list(set(existing.methods_used + r.methods_used))
-            seen[key] = existing.model_copy(update={
-                "scores": merged_scores,
-                "methods_used": merged_methods,
-            })
+            seen[key] = existing.model_copy(
+                update={
+                    "scores": merged_scores,
+                    "methods_used": merged_methods,
+                }
+            )
     return list(seen.values())
 
 
@@ -106,8 +107,7 @@ class WeightedFusionRanker:
 
         # Score and sort
         scored: list[tuple[float, SearchResultV1]] = [
-            (compute_fused_score(r, is_personal_query), r)
-            for r in deduped
+            (compute_fused_score(r, is_personal_query), r) for r in deduped
         ]
         scored.sort(key=lambda x: -x[0])
 
@@ -115,7 +115,10 @@ class WeightedFusionRanker:
 
         logger.info(
             "Fusion: %s input -> %s deduped -> %s ranked | personal=%s",
-            len(results), len(deduped), len(ranked), is_personal_query,
+            len(results),
+            len(deduped),
+            len(ranked),
+            is_personal_query,
         )
 
         return ranked

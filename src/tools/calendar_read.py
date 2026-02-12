@@ -1,9 +1,10 @@
 """Calendar read: list calendars, list events, get event by id."""
 
-from src.core.prompts import get_tool_description, get_tool_examples
 from src.core.logger import logger
+from src.core.prompts import get_tool_description, get_tool_examples
 from src.services.google_service import GoogleService
 from src.tools.base import Tool, ToolResult
+
 
 def _format_event_summary(event: dict) -> str:
     summary = event.get("summary") or "(No title)"
@@ -62,21 +63,25 @@ class CalendarReadTool(Tool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(
-        self,
-        action: str,
-        range_preset: str = "next_7_days",
-        calendar_id: str = "",
-        event_id: str = "",
-    ) -> ToolResult:
-        logger.tool_execute(self.name, {
-            "action": action, 
-            "range_preset": range_preset, 
-            "calendar_id": calendar_id, 
-            "event_id": event_id
-        })
+    async def execute(self, **kwargs: object) -> ToolResult:
+        action = str(kwargs.get("action", ""))
+        range_preset = str(kwargs.get("range_preset", "next_7_days"))
+        calendar_id = str(kwargs.get("calendar_id", ""))
+        event_id = str(kwargs.get("event_id", ""))
+        logger.tool_execute(
+            self.name,
+            {
+                "action": action,
+                "range_preset": range_preset,
+                "calendar_id": calendar_id,
+                "event_id": event_id,
+            },
+        )
         import asyncio
-        return await asyncio.to_thread(self._sync_execute, action, range_preset, calendar_id, event_id)
+
+        return await asyncio.to_thread(
+            self._sync_execute, action, range_preset, calendar_id, event_id
+        )
 
     def _sync_execute(
         self,
@@ -112,18 +117,23 @@ class CalendarReadTool(Tool):
 
             if action == "list_events":
                 from src.services.google_service import range_preset_to_timebounds
+
                 time_min, time_max = range_preset_to_timebounds(range_preset)
                 cal_id = self._service.get_calendar_id(calendar_id)
-                
-                events_result = self._service.calendar.events().list(
-                    calendarId=cal_id,
-                    timeMin=time_min.isoformat().replace("+00:00", "Z"),
-                    timeMax=time_max.isoformat().replace("+00:00", "Z"),
-                    singleEvents=True,
-                    orderBy="startTime",
-                ).execute()
+
+                events_result = (
+                    self._service.calendar.events()
+                    .list(
+                        calendarId=cal_id,
+                        timeMin=time_min.isoformat().replace("+00:00", "Z"),
+                        timeMax=time_max.isoformat().replace("+00:00", "Z"),
+                        singleEvents=True,
+                        orderBy="startTime",
+                    )
+                    .execute()
+                )
                 events = events_result.get("items", [])
-                
+
                 if not events:
                     out = "No events in that range."
                 else:
@@ -137,12 +147,16 @@ class CalendarReadTool(Tool):
                     logger.tool_result(self.name, 0, False, error_reason=msg)
                     return ToolResult.fail(msg)
                 cal_id = self._service.get_calendar_id(calendar_id)
-                event = self._service.calendar.events().get(calendarId=cal_id, eventId=event_id.strip()).execute()
+                event = (
+                    self._service.calendar.events()
+                    .get(calendarId=cal_id, eventId=event_id.strip())
+                    .execute()
+                )
                 if not event:
                     msg = "Event not found."
                     logger.tool_result(self.name, 0, False, error_reason=msg)
                     return ToolResult.fail(msg)
-                
+
                 out = _format_event_full(event)
                 logger.tool_result(self.name, len(out), True)
                 return ToolResult.ok(out)

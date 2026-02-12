@@ -7,7 +7,8 @@ One dispatcher handles all MCP servers; each server is called via unified_search
 import json
 import logging
 import time
-from typing import Any, Callable, Awaitable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from src.contracts.mcp_search_v1 import SearchResultV1, SourceClass
 
@@ -35,7 +36,8 @@ class MCPSearchDispatcher:
             self._connection_sources[name] = connection_key
         logger.info(
             "Dispatcher: registered MCP connection '%s' for sources %s",
-            connection_key, source_names,
+            connection_key,
+            source_names,
         )
 
     def has_source(self, source_name: str) -> bool:
@@ -80,12 +82,15 @@ class MCPSearchDispatcher:
 
         logger.info(
             "Dispatcher: unified_search(%s) returned in %.1fms",
-            source, elapsed_ms,
+            source,
+            elapsed_ms,
         )
 
         return self._parse_response(result, source)
 
-    async def fetch_capabilities(self, connection_key: str, mcp_call: Callable) -> dict[str, Any]:
+    async def fetch_capabilities(
+        self, connection_key: str, mcp_call: Callable
+    ) -> dict[str, Any]:
         """Call search_capabilities on an MCP server."""
         try:
             result = await mcp_call("search_capabilities", {})
@@ -103,10 +108,14 @@ class MCPSearchDispatcher:
                 return result
             return {}
         except Exception as e:
-            logger.error("Failed to fetch capabilities from '%s': %s", connection_key, e)
+            logger.error(
+                "Failed to fetch capabilities from '%s': %s", connection_key, e
+            )
             return {}
 
-    def _parse_response(self, result: dict[str, Any], source: str) -> list[SearchResultV1]:
+    def _parse_response(
+        self, result: dict[str, Any], source: str
+    ) -> list[SearchResultV1]:
         """Parse MCP unified_search response into SearchResultV1 list."""
         if not result.get("success", True) and "results" not in result:
             error = result.get("error", "Unknown error")
@@ -134,20 +143,24 @@ class MCPSearchDispatcher:
             if not isinstance(item, dict):
                 continue
             try:
-                results.append(SearchResultV1(
-                    id=str(item.get("id", "")),
-                    source=item.get("source", source),
-                    source_class=SourceClass(item.get("source_class", "personal")),
-                    title=item.get("title", ""),
-                    snippet=item.get("snippet", ""),
-                    timestamp=item.get("timestamp"),
-                    scores=item.get("scores", {}),
-                    methods_used=item.get("methods_used", []),
-                    metadata=item.get("metadata", {}),
-                    provenance=item.get("provenance"),
-                ))
+                results.append(
+                    SearchResultV1(
+                        id=str(item.get("id", "")),
+                        source=item.get("source", source),
+                        source_class=SourceClass(item.get("source_class", "personal")),
+                        title=item.get("title", ""),
+                        snippet=item.get("snippet", ""),
+                        timestamp=item.get("timestamp"),
+                        scores=item.get("scores", {}),
+                        methods_used=item.get("methods_used", []),
+                        metadata=item.get("metadata", {}),
+                        provenance=item.get("provenance"),
+                    )
+                )
             except Exception as e:
-                logger.debug("Dispatcher: failed to parse result from '%s': %s", source, e)
+                logger.debug(
+                    "Dispatcher: failed to parse result from '%s': %s", source, e
+                )
                 continue
 
         return results

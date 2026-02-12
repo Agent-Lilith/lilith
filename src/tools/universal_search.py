@@ -54,7 +54,7 @@ def _format_response(response: UniversalSearchResponse) -> str:
             if r.metadata.get("visit_count") and r.metadata["visit_count"] > 1:
                 visits = f" | {r.metadata['visit_count']} visits"
 
-            line = f"{i}. [{r.source}] \"{r.title}\"{detail}{visits}{ts} | score:{best_score:.2f}"
+            line = f'{i}. [{r.source}] "{r.title}"{detail}{visits}{ts} | score:{best_score:.2f}'
             parts.append(line)
             # Include snippet (message body) when available and different from title
             if r.snippet and r.snippet.strip() and r.snippet.strip() != r.title.strip():
@@ -94,14 +94,12 @@ class UniversalSearchTool(Tool):
     def get_examples(self) -> list[str]:
         return get_tool_examples(self.name)
 
-    async def execute(
-        self,
-        max_results: str = "",
-        user_message: str = "",
-        conversation_context: str = "",
-    ) -> ToolResult:
+    async def execute(self, **kwargs: object) -> ToolResult:
         from src.core.logger import logger
 
+        max_results = str(kwargs.get("max_results", ""))
+        user_message = str(kwargs.get("user_message", ""))
+        conversation_context = str(kwargs.get("conversation_context", ""))
         context = (conversation_context or user_message or "").strip()
         if not context:
             return ToolResult.fail(
@@ -132,4 +130,3 @@ class UniversalSearchTool(Tool):
 
         out = _format_response(response)
         return ToolResult.ok(out)
-

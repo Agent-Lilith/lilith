@@ -1,10 +1,20 @@
 """LangSmith tracing integration."""
 
+from __future__ import annotations
+
 import atexit
 import os
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+if TYPE_CHECKING:
+    from langsmith import Client as LangSmithClient
 
 _ENABLED = os.getenv("LANGSMITH_TRACING", "").strip().lower() == "true"
+
+_LangSmithRunType = Literal[
+    "tool", "chain", "llm", "retriever", "embedding", "prompt", "parser"
+]
 
 
 class _NoOpRun:
@@ -53,7 +63,7 @@ def _noop_flush() -> None:
     pass
 
 
-def _noop_get_client() -> None:
+def _noop_get_client() -> LangSmithClient | None:
     return None
 
 
@@ -64,9 +74,9 @@ get_client = _noop_get_client
 
 if _ENABLED:
     try:
-        from langsmith.run_helpers import trace as _ls_trace
-        from langsmith import traceable as _ls_traceable
         from langsmith import Client as LangSmithClient
+        from langsmith import traceable as _ls_traceable
+        from langsmith.run_helpers import trace as _ls_trace
 
         _project = os.getenv("LANGSMITH_PROJECT", "lilith")
         _client: LangSmithClient | None = None
@@ -88,7 +98,7 @@ if _ENABLED:
         ):
             return _ls_trace(
                 name,
-                run_type=run_type,
+                run_type=cast("_LangSmithRunType", run_type),
                 inputs=inputs or {},
                 metadata=metadata or {},
                 project_name=project_name or _project,
@@ -100,7 +110,7 @@ if _ENABLED:
             run_type: str = "chain",
             **kwargs: Any,
         ):
-            return _ls_traceable(
+            return _ls_traceable(  # type: ignore[call-overload]
                 name=name,
                 run_type=run_type,
                 **kwargs,

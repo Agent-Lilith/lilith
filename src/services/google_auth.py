@@ -12,7 +12,9 @@ from src.services.google_service import SCOPES, _save_tokens
 def run_google_auth() -> int:
     if not config.google_client_id or not config.google_client_secret:
         print("Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in .env")
-        print("Add them from Google Cloud Console > APIs & Services > Credentials > OAuth 2.0 Client ID (Desktop).")
+        print(
+            "Add them from Google Cloud Console > APIs & Services > Credentials > OAuth 2.0 Client ID (Desktop)."
+        )
         return 1
 
     client_config = {
@@ -38,8 +40,12 @@ def run_google_auth() -> int:
             print("\nYour calendars:")
             for i, cal in enumerate(items):
                 mark = " (primary)" if cal.get("primary") else ""
-                print(f"  {i + 1}. {cal.get('summary', 'No name')} — id: {cal.get('id')}{mark}")
-            choice = input("\nSet default calendar by number (Enter = use 'primary'): ").strip()
+                print(
+                    f"  {i + 1}. {cal.get('summary', 'No name')} — id: {cal.get('id')}{mark}"
+                )
+            choice = input(
+                "\nSet default calendar by number (Enter = use 'primary'): "
+            ).strip()
             if choice.isdigit() and 1 <= int(choice) <= len(items):
                 default_calendar_id = items[int(choice) - 1]["id"]
                 print(f"Default calendar set to: {default_calendar_id}")
@@ -66,5 +72,7 @@ def run_google_auth() -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     _save_tokens(path, creds, default_calendar_id, default_task_list_id)
     print(f"Tokens saved to {path}")
-    print("You can now use calendar_read, calendar_write, tasks_read, and tasks_write tools.")
+    print(
+        "You can now use calendar_read, calendar_write, tasks_read, and tasks_write tools."
+    )
     return 0

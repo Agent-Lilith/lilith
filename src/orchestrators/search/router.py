@@ -8,10 +8,9 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from src.contracts.mcp_search_v1 import RetrievalMethod, SourceClass
 from src.core.config import config
 from src.orchestrators.search.capabilities import CapabilityRegistry
 
@@ -37,13 +36,15 @@ class RoutingPlan:
     reasoning: str = ""
 
 
-# Source hint keywords -> source names
+# Source hint keywords -> source names.
 _SOURCE_HINTS: dict[str, list[str]] = {
     "email": ["email"],
     "mail": ["email"],
     "inbox": ["email"],
     "sent": ["email"],
-    "browser": ["browser_history", "browser_bookmarks"],
+    "browser_history": ["browser_history"],
+    "browser_bookmarks": ["browser_bookmarks"],
+    "browser_bookmark": ["browser_bookmarks"],
     "history": ["browser_history"],
     "visited": ["browser_history"],
     "bookmark": ["browser_bookmarks"],
@@ -67,16 +68,40 @@ _SOURCE_HINTS: dict[str, list[str]] = {
 # Filter-related patterns
 _FILTER_PATTERNS: dict[str, re.Pattern] = {
     "from_email": re.compile(r"\bfrom\s+(\S+@\S+)", re.IGNORECASE),
-    "domain": re.compile(r"\b(?:on|from|at)\s+([\w.-]+\.(?:com|org|net|io|dev|co|ai))\b", re.IGNORECASE),
-    "date_after": re.compile(r"\b(?:after|since|from)\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE),
-    "date_before": re.compile(r"\b(?:before|until|by)\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE),
+    "domain": re.compile(
+        r"\b(?:on|from|at)\s+([\w.-]+\.(?:com|org|net|io|dev|co|ai))\b", re.IGNORECASE
+    ),
+    "date_after": re.compile(
+        r"\b(?:after|since|from)\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE
+    ),
+    "date_before": re.compile(
+        r"\b(?:before|until|by)\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE
+    ),
 }
 
 # Temporal keywords that suggest structured search
-_TEMPORAL_KEYWORDS = {"today", "yesterday", "this week", "last week", "this month", "last month", "recent", "recently", "latest", "most recent"}
+_TEMPORAL_KEYWORDS = {
+    "today",
+    "yesterday",
+    "this week",
+    "last week",
+    "this month",
+    "last month",
+    "recent",
+    "recently",
+    "latest",
+    "most recent",
+}
 
 # Relationship keywords that suggest complex queries
-_RELATIONSHIP_KEYWORDS = {"between", "related to", "about the same", "thread", "conversation", "regarding"}
+_RELATIONSHIP_KEYWORDS = {
+    "between",
+    "related to",
+    "about the same",
+    "thread",
+    "conversation",
+    "regarding",
+}
 
 
 class RetrievalRouter:
@@ -110,12 +135,14 @@ class RetrievalRouter:
             methods = self._select_methods(source, query, filters, intent)
             # Only include filters this source actually supports
             source_filters = self._filter_for_source(source, filters)
-            decisions.append(RoutingDecision(
-                source=source,
-                methods=methods,
-                query=query,
-                filters=source_filters,
-            ))
+            decisions.append(
+                RoutingDecision(
+                    source=source,
+                    methods=methods,
+                    query=query,
+                    filters=source_filters,
+                )
+            )
 
         reasoning = (
             f"Routed to {len(decisions)} source(s): "
@@ -162,29 +189,37 @@ class RetrievalRouter:
         # Check for explicit source hints in intent
         hints = intent.get("source_hints") or []
         if hints:
-            target = set()
+            target: set[str] = set()
             for hint in hints:
                 hint_lower = str(hint).lower().strip()
-                for keyword, sources in _SOURCE_HINTS.items():
-                    if keyword in hint_lower:
-                        target.update(s for s in sources if s in available)
+                # Exact match first: compound hints (e.g. browser_history) map to one source only
+                if hint_lower in _SOURCE_HINTS:
+                    target.update(
+                        s for s in _SOURCE_HINTS[hint_lower] if s in available
+                    )
+                else:
+                    for keyword, sources in _SOURCE_HINTS.items():
+                        if keyword in hint_lower:
+                            target.update(s for s in sources if s in available)
             if target:
                 return sorted(target)
 
         # Check for source keywords in query
         query_lower = query.lower()
-        target = set()
+        query_target: set[str] = set()
         for keyword, sources in _SOURCE_HINTS.items():
             if keyword in query_lower:
-                target.update(s for s in sources if s in available)
-        if target:
-            return sorted(target)
+                query_target.update(s for s in sources if s in available)
+        if query_target:
+            return sorted(query_target)
 
         # Default: query all personal sources (skip web unless explicitly requested)
         personal = self._capabilities.personal_sources()
         return sorted(personal) if personal else sorted(available)
 
-    def _extract_filters(self, intent: dict[str, Any], query: str) -> list[dict[str, Any]]:
+    def _extract_filters(
+        self, intent: dict[str, Any], query: str
+    ) -> list[dict[str, Any]]:
         """Extract filter clauses from intent and query patterns."""
         filters: list[dict[str, Any]] = []
 
@@ -195,15 +230,19 @@ class RetrievalRouter:
                 role = entity.get("role", "")
                 name = entity.get("name", "")
                 if role == "sender" and name:
-                    filters.append({"field": "from_email", "operator": "contains", "value": name})
+                    filters.append(
+                        {"field": "from_email", "operator": "contains", "value": name}
+                    )
                 elif role == "recipient" and name:
-                    filters.append({"field": "to_email", "operator": "contains", "value": name})
+                    filters.append(
+                        {"field": "to_email", "operator": "contains", "value": name}
+                    )
 
         # From intent temporal
         temporal = intent.get("temporal")
         if temporal:
             temporal_str = str(temporal).lower().strip()
-            
+
             tz_name = config.user_timezone or "UTC"
             try:
                 tz = ZoneInfo(tz_name)
@@ -211,29 +250,71 @@ class RetrievalRouter:
                 tz = ZoneInfo("UTC")
             now = datetime.now(tz)
             if temporal_str in ("today",):
-                filters.append({"field": "date_after", "operator": "gte", "value": now.date().isoformat()})
+                filters.append(
+                    {
+                        "field": "date_after",
+                        "operator": "gte",
+                        "value": now.date().isoformat(),
+                    }
+                )
             elif temporal_str in ("yesterday",):
                 yesterday = (now - timedelta(days=1)).date()
-                filters.append({"field": "date_after", "operator": "gte", "value": yesterday.isoformat()})
-                filters.append({"field": "date_before", "operator": "lte", "value": yesterday.isoformat()})
+                filters.append(
+                    {
+                        "field": "date_after",
+                        "operator": "gte",
+                        "value": yesterday.isoformat(),
+                    }
+                )
+                filters.append(
+                    {
+                        "field": "date_before",
+                        "operator": "lte",
+                        "value": yesterday.isoformat(),
+                    }
+                )
             elif temporal_str in ("this week", "last week"):
                 days = 7 if temporal_str == "this week" else 14
-                filters.append({"field": "date_after", "operator": "gte", "value": (now - timedelta(days=days)).date().isoformat()})
+                filters.append(
+                    {
+                        "field": "date_after",
+                        "operator": "gte",
+                        "value": (now - timedelta(days=days)).date().isoformat(),
+                    }
+                )
             elif temporal_str in ("this month", "last month"):
                 days = 30 if temporal_str == "this month" else 60
-                filters.append({"field": "date_after", "operator": "gte", "value": (now - timedelta(days=days)).date().isoformat()})
+                filters.append(
+                    {
+                        "field": "date_after",
+                        "operator": "gte",
+                        "value": (now - timedelta(days=days)).date().isoformat(),
+                    }
+                )
             elif temporal_str in ("recent", "recently", "latest", "most recent"):
-                filters.append({"field": "date_after", "operator": "gte", "value": (now - timedelta(days=30)).date().isoformat()})
+                filters.append(
+                    {
+                        "field": "date_after",
+                        "operator": "gte",
+                        "value": (now - timedelta(days=30)).date().isoformat(),
+                    }
+                )
 
         # From regex patterns in query
         for field_name, pattern in _FILTER_PATTERNS.items():
             match = pattern.search(query)
             if match:
                 value = match.group(1)
-                op = "gte" if "after" in field_name else ("lte" if "before" in field_name else "contains")
+                op = (
+                    "gte"
+                    if "after" in field_name
+                    else ("lte" if "before" in field_name else "contains")
+                )
                 # Don't duplicate filters
                 if not any(f["field"] == field_name for f in filters):
-                    filters.append({"field": field_name, "operator": op, "value": value})
+                    filters.append(
+                        {"field": field_name, "operator": op, "value": value}
+                    )
 
         return filters
 
@@ -256,8 +337,11 @@ class RetrievalRouter:
         query_lower = query.lower()
 
         has_temporal = bool(intent.get("temporal"))
-        is_broad = any(kw in query_lower for kw in ("anything", "all", "latest", "recent", "everything", "any"))
-        
+        is_broad = any(
+            kw in query_lower
+            for kw in ("anything", "all", "latest", "recent", "everything", "any")
+        )
+
         # Structured-first: always include structured when we have filters, temporal intent, or broad query
         if (has_filters or has_temporal or is_broad) and "structured" in supported:
             methods.append("structured")
@@ -281,7 +365,9 @@ class RetrievalRouter:
 
         return methods
 
-    def _filter_for_source(self, source: str, filters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _filter_for_source(
+        self, source: str, filters: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Keep only filters that this source actually supports."""
         caps = self._capabilities.get(source)
         if not caps:

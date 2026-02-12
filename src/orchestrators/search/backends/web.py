@@ -44,18 +44,20 @@ class WebSearchBackend(SearchBackend):
             url = item.get("url") or "#"
             score = max(0.3, 1.0 - (i * 0.05))
 
-            results.append(SearchResultV1(
-                id=f"web_{i}_{hash(url) % 10000}",
-                source="web",
-                source_class=SourceClass.WEB,
-                title=title,
-                snippet=content,
-                timestamp=None,
-                scores={"fulltext": score},
-                methods_used=["fulltext"],
-                metadata={"url": url},
-                provenance=f"web result from {url.split('/')[2] if '/' in url else url}",
-            ))
+            results.append(
+                SearchResultV1(
+                    id=f"web_{i}_{hash(url) % 10000}",
+                    source="web",
+                    source_class=SourceClass.WEB,
+                    title=title,
+                    snippet=content,
+                    timestamp=None,
+                    scores={"fulltext": score},
+                    methods_used=["fulltext"],
+                    metadata={"url": url},
+                    provenance=f"web result from {url.split('/')[2] if '/' in url else url}",
+                )
+            )
         return results
 
     def get_source_name(self) -> str:

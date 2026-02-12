@@ -27,19 +27,17 @@ class VLLMClient:
         self.model = config.vllm_model
         self.client = httpx.AsyncClient(timeout=120.0)
         self.formatter = get_formatter(self.model)
-    
+
     async def generate(
         self,
         prompt: str,
         max_tokens: int = 1024,
         temperature: float = 0.7,
-        stop: list[str] = None,
-        stream: bool = False
+        stop: list[str] | None = None,
+        stream: bool = False,
     ) -> LLMResponse | Any:
         logger.llm_request(
-            model=self.model,
-            is_local=True,
-            prompt_preview=prompt[-200:]
+            model=self.model, is_local=True, prompt_preview=prompt[-200:]
         )
         payload = {
             "model": self.model,
@@ -78,7 +76,7 @@ class VLLMClient:
                 response = await self.client.post(
                     f"{self.base_url}/v1/completions",
                     json=payload,
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json"},
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -86,10 +84,14 @@ class VLLMClient:
                 tokens_used = data.get("usage", {}).get("total_tokens", 0)
                 thought = ""
                 final_text = generated_text
-                thought_match = re.search(r'<(thought|think)>(.*?)</\1>', generated_text, re.DOTALL)
+                thought_match = re.search(
+                    r"<(thought|think)>(.*?)</\1>", generated_text, re.DOTALL
+                )
                 if thought_match:
                     thought = thought_match.group(2).strip()
-                    final_text = generated_text.replace(thought_match.group(0), "").strip()
+                    final_text = generated_text.replace(
+                        thought_match.group(0), ""
+                    ).strip()
                 elif "Thought:" in generated_text:
                     parts = generated_text.split("Thought:", 1)[1].split("\n\n", 1)
                     if len(parts) > 1:
@@ -111,12 +113,18 @@ class VLLMClient:
                     text=final_text,
                     model=self.model,
                     thought=thought,
-                    tokens_used=tokens_used
+                    tokens_used=tokens_used,
                 )
             except httpx.HTTPStatusError as e:
-                body = getattr(e.response, "text", None) or (e.response.content.decode("utf-8", errors="replace") if e.response.content else "")
+                body = getattr(e.response, "text", None) or (
+                    e.response.content.decode("utf-8", errors="replace")
+                    if e.response.content
+                    else ""
+                )
                 if body:
-                    logger.error(f"LLM request failed {e.response.status_code}: {body[:500]}")
+                    logger.error(
+                        f"LLM request failed {e.response.status_code}: {body[:500]}"
+                    )
                 else:
                     logger.error(f"LLM request failed: {e.response.status_code}", e)
                 raise
@@ -129,7 +137,7 @@ class VLLMClient:
             "POST",
             f"{self.base_url}/v1/completions",
             json=payload,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         ) as response:
             if response.status_code >= 400:
                 body = (await response.aread()).decode("utf-8", errors="replace")
@@ -151,12 +159,12 @@ class VLLMClient:
             except (httpx.ReadError, httpx.RemoteProtocolError) as e:
                 logger.error(f"LLM streaming connection lost: {e}")
                 raise
-    
+
     def format_prompt(
         self,
         system_message: str,
         conversation: list[dict],
-        user_message: str = None
+        user_message: str | None = None,
     ) -> str:
         return self.formatter.format(system_message, conversation, user_message)
 

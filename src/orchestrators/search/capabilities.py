@@ -49,25 +49,29 @@ class CapabilityRegistry:
 
     def personal_sources(self) -> list[str]:
         return [
-            name for name, caps in self._capabilities.items()
+            name
+            for name, caps in self._capabilities.items()
             if caps.source_class == SourceClass.PERSONAL
         ]
 
     def web_sources(self) -> list[str]:
         return [
-            name for name, caps in self._capabilities.items()
+            name
+            for name, caps in self._capabilities.items()
             if caps.source_class == SourceClass.WEB
         ]
 
     def sources_supporting_method(self, method: str) -> list[str]:
         return [
-            name for name, caps in self._capabilities.items()
+            name
+            for name, caps in self._capabilities.items()
             if method in [str(m) for m in caps.supported_methods]
         ]
 
     def sources_supporting_filter(self, filter_name: str) -> list[str]:
         return [
-            name for name, caps in self._capabilities.items()
+            name
+            for name, caps in self._capabilities.items()
             if any(f.name == filter_name for f in caps.supported_filters)
         ]
 
