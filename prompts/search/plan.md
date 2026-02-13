@@ -36,4 +36,4 @@ Return a JSON array of search steps. Each step is an object with:
 4. Prefer structured + fulltext for precise lookups; add vector for conceptual queries.
 5. Do not invent sources that are not in the available list.
 
-Return only the JSON array. No explanation.
+Return only valid JSON (array). No explanation, no markdown fencing.

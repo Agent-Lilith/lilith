@@ -29,4 +29,4 @@ Analyze the gap between what was requested and what was found. Suggest 0-4 addit
 3. Use "query": "" for structured-only lookups (e.g., broadening date range).
 4. Each step: {"source": "...", "methods": [...], "query": "...", "filters": [...]}.
 
-Return only the JSON array.
+Return only valid JSON (array). No explanation, no markdown fencing.

@@ -20,4 +20,4 @@ Return a JSON array of result indices ordered by relevance (most relevant first)
 4. **Specificity**: Prefer results with higher structured or fulltext scores over vector-only matches.
 5. **Completeness**: Include every index from 0 to N-1 exactly once. Place less relevant items at the end rather than omitting them.
 
-Return only the JSON array of integers. Example: [2, 0, 5, 1, 3, 4]
+Return only valid JSON (array of integers). No explanation, no markdown fencing. Example: [2, 0, 5, 1, 3, 4]

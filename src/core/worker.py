@@ -59,14 +59,19 @@ class Worker:
         instruction: str = "Format the result as a concise summary with bullet points.",
     ) -> str:
         template = self._get_template()
-        prompt = (
+        system_message = (
             template.replace("{task_description}", task_description)
             .replace("{instruction}", instruction)
-            .replace("{data}", data)
         )
+        user_message = f"DATA TO PROCESS:\n---\n{data}\n---\n\nAction: {task_description}"
 
-        logger.debug(f"🛠️ Worker task started: {task_description[:50]}...")
+        logger.debug(f"Worker task started: {task_description[:50]}...")
         client = current_llm_client.get() or self.client
+        prompt = client.format_prompt(
+            system_message=system_message,
+            conversation=[],
+            user_message=user_message,
+        )
         stop = getattr(getattr(client, "formatter", None), "stop_tokens", None) or [
             "<|eot_id|>",
             "<|end_of_text|>",
@@ -80,7 +85,7 @@ class Worker:
         result = (response.text if hasattr(response, "text") else str(response)).strip()
         result = _strip_conversation_tokens(result)
         logger.debug(
-            f"✅ Worker task completed. Input: {len(data)} chars -> Output: {len(result)} chars"
+            f"Worker task completed. Input: {len(data)} chars -> Output: {len(result)} chars"
         )
         return result
 

@@ -127,10 +127,7 @@ async def _extract_via_llm(
     finally:
         logger.set_prompt_role(None)
     text = (raw if isinstance(raw, str) else str(raw)).strip()
-    name = _parse_llm_name(text)
-    if name:
-        return ExtractedEntity(from_name=name)
-    return ExtractedEntity()
+    return _parse_llm_entity(text)
 
 
 def _parse_llm_name(text: str) -> str | None:
@@ -143,3 +140,26 @@ def _parse_llm_name(text: str) -> str | None:
     if not text or len(text) > 200:
         return None
     return text
+
+
+# Pattern for "Name (email)" format from LLM output
+_LLM_NAME_EMAIL_PATTERN = re.compile(r"^(.+?)\s*\(([^)]+@[^)]+)\)$")
+
+
+def _parse_llm_entity(text: str) -> ExtractedEntity:
+    """Parse LLM entity output: 'name (email)', 'name', or 'NONE'."""
+    if not text:
+        return ExtractedEntity()
+    text = text.strip().strip('"\'')
+    if "\n" in text:
+        text = text.split("\n")[0].strip()
+    if not text or text.upper() == "NONE" or text.lower() == "unknown" or len(text) > 200:
+        return ExtractedEntity()
+    # Try "Name (email)" format
+    m = _LLM_NAME_EMAIL_PATTERN.match(text)
+    if m:
+        name = m.group(1).strip()
+        email = m.group(2).strip()
+        return ExtractedEntity(from_name=name or None, from_email=email or None)
+    # Plain name
+    return ExtractedEntity(from_name=text)

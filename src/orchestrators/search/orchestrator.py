@@ -82,6 +82,80 @@ def _default_query_from_context(context: str) -> str:
     return first_line[:200] if first_line else ""
 
 
+_FAST_PATH_PATTERNS: list[tuple[re.Pattern, dict[str, Any]]] = [
+    # "my calendar today/tomorrow/this week"
+    (
+        re.compile(
+            r"\b(?:calendar|schedule|meetings?|events?)\b.*\b(today|tomorrow|this week|next week|next \d+ days)\b",
+            re.IGNORECASE,
+        ),
+        {"intent": "find_event", "source_hints": ["calendar"], "complexity": "simple"},
+    ),
+    # "today/tomorrow/this week" + "calendar/schedule/meetings"
+    (
+        re.compile(
+            r"\b(today|tomorrow|this week|next week)\b.*\b(?:calendar|schedule|meetings?|events?)\b",
+            re.IGNORECASE,
+        ),
+        {"intent": "find_event", "source_hints": ["calendar"], "complexity": "simple"},
+    ),
+    # "emails from <name>" (simple sender lookup)
+    (
+        re.compile(
+            r"\b(?:emails?|mail)\b.*\bfrom\s+(\w[\w\s]{0,30}?)(?:\s+(?:today|yesterday|this week|last week|this month|recently))?$",
+            re.IGNORECASE,
+        ),
+        {"intent": "find_information", "source_hints": ["email"], "complexity": "simple"},
+    ),
+    # "my tasks/todos"
+    (
+        re.compile(r"\b(?:my\s+)?(?:tasks?|todos?|to-do)\b", re.IGNORECASE),
+        {"intent": "check_status", "source_hints": ["tasks"], "complexity": "simple"},
+    ),
+]
+
+_FAST_PATH_TEMPORAL = re.compile(
+    r"\b(today|tomorrow|yesterday|this week|last week|this month|last month|recently|recent|latest)\b",
+    re.IGNORECASE,
+)
+
+_FAST_PATH_SENDER = re.compile(
+    r"\b(?:emails?|mail)\s+from\s+(\w[\w\s]{0,30})\b", re.IGNORECASE
+)
+
+
+def _try_fast_path_intent(query: str) -> dict[str, Any] | None:
+    """Try to build intent deterministically for common patterns. Returns None if ambiguous."""
+    if not query or len(query) > 200:
+        return None
+
+    query_stripped = query.strip()
+
+    for pattern, base_intent in _FAST_PATH_PATTERNS:
+        if pattern.search(query_stripped):
+            intent = {
+                "intent": base_intent["intent"],
+                "entities": [],
+                "temporal": None,
+                "source_hints": list(base_intent["source_hints"]),
+                "complexity": base_intent["complexity"],
+                "retrieval_plan": None,
+            }
+            # Extract temporal
+            temporal_match = _FAST_PATH_TEMPORAL.search(query_stripped)
+            if temporal_match:
+                intent["temporal"] = temporal_match.group(1).lower()
+            # Extract sender entity for email queries
+            sender_match = _FAST_PATH_SENDER.search(query_stripped)
+            if sender_match:
+                name = sender_match.group(1).strip()
+                if name:
+                    intent["entities"] = [{"name": name, "role": "sender"}]
+            return intent
+
+    return None
+
+
 class UniversalSearchOrchestrator:
     """Capability-driven search orchestrator with hybrid retrieval and weighted fusion."""
 
@@ -142,8 +216,6 @@ class UniversalSearchOrchestrator:
                     "source_hints": [],
                     "complexity": "simple",
                     "retrieval_plan": None,
-                    "retrieval_hints": [],
-                    "ambiguities": [],
                 },
             )
         finally:
@@ -267,6 +339,14 @@ class UniversalSearchOrchestrator:
         sources = {r.source for r in results}
         hints = intent.get("source_hints", [])
         if len(sources) == 1 and len(hints) > 1:
+            # Skip refinement when intent is multi_hop: missing source likely needs
+            # entity from this step (e.g. "email from that person"); retrying with
+            # the same query would just repeat 0 results.
+            if intent.get("complexity") == "multi_hop":
+                logger.debug(
+                    "Refinement skipped: single_source (intent is multi_hop, retry would use same query)"
+                )
+                return False, ""
             return True, "single_source"
 
         # Trigger 4: Results contradict each other (placeholder for now)
@@ -354,10 +434,16 @@ class UniversalSearchOrchestrator:
                         )
                     )
 
+        re_query_sources = [d.source for d in refined]
         logger.info(
             "Refinement (reason=%s): %s additional decisions",
             reason,
             len(refined),
+        )
+        logger.debug(
+            "Refinement: reason=%s re_query_sources=%s",
+            reason,
+            re_query_sources,
         )
         return refined[:4]  # Cap at 4 refinement steps
 
@@ -480,14 +566,21 @@ class UniversalSearchOrchestrator:
                 },
             )
 
-        query = _default_query_from_context(context)
+        # Use user_message directly as query when available; fall back to first-line extraction
+        query = user_message.strip()[:200] if user_message and user_message.strip() else _default_query_from_context(context)
         errors: list[str] = []
         timing_ms: dict[str, float] = {}
 
-        # 2. Intent analysis (LLM)
+        # 2. Intent analysis: try fast-path first, fall back to LLM
         t0 = time.monotonic()
-        intent = await self._analyze_intent(context)
-        timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
+        fast_intent = _try_fast_path_intent(query)
+        if fast_intent is not None:
+            intent = fast_intent
+            timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
+            logger.info("Intent (fast-path): hints=%s | temporal=%s", intent.get("source_hints"), intent.get("temporal"))
+        else:
+            intent = await self._analyze_intent(context)
+            timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
         logger.info(
             "Intent: %s | entities=%s | temporal=%s | hints=%s | complexity=%s | plan_steps=%s",
             intent.get("intent"),
@@ -508,6 +601,13 @@ class UniversalSearchOrchestrator:
             logger.info(
                 "Multihop plan missing or invalid, using single-step search",
             )
+
+        logger.debug(
+            "Search intent: complexity=%s plan_steps=%s use_multihop=%s",
+            intent.get("complexity"),
+            len(plan or []),
+            use_multihop,
+        )
 
         if use_multihop:
             # 3a. Multi-hop: run steps sequentially with entity extraction between steps
