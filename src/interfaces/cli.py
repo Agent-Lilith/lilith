@@ -125,6 +125,12 @@ async def run_cli(initial_external: bool = False):
 
     print_banner()
     print(colorize("  Type /help for commands\n", Colors.DIM))
+    if config.session_id:
+        from src.core.session_recorder import get_session_recorder
+
+        rec = get_session_recorder()
+        rec.reset_session()
+        rec.clear_session_folder_on_open()
     agent = await Agent.create()
     try:
         while True:
@@ -205,6 +211,9 @@ async def run_cli(initial_external: bool = False):
                         result.response if isinstance(result, ChatResult) else result
                     )
                     run.end(outputs={"response_preview": (response or "")[:500]})
+                    from src.core.session_recorder import get_session_recorder
+
+                    get_session_recorder().write_trace_file(run)
                 response = result.response if isinstance(result, ChatResult) else result
                 sys.stdout.write("\r" + " " * shutil.get_terminal_size().columns + "\r")
                 print(format_response(response))

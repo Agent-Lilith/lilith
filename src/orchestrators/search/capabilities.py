@@ -12,6 +12,11 @@ from src.contracts.mcp_search_v1 import SearchCapabilities, SourceClass
 logger = logging.getLogger(__name__)
 
 
+def _humanize_source_name(source_name: str) -> str:
+    """Fallback display label: replace underscores with spaces, title-case."""
+    return source_name.replace("_", " ").title()
+
+
 class CapabilityRegistry:
     """Stores and queries search capabilities across all backends."""
 
@@ -46,6 +51,21 @@ class CapabilityRegistry:
 
     def all_sources(self) -> list[str]:
         return list(self._capabilities.keys())
+
+    def source_labels_for_agent(self) -> list[str]:
+        """Return user-facing labels for all sources, for the agent prompt.
+
+        Uses display_label when set, otherwise humanized source_name.
+        """
+        result = []
+        for name in sorted(self._capabilities.keys()):
+            caps = self._capabilities[name]
+            label = getattr(caps, "display_label", None) if caps else None
+            if label and str(label).strip():
+                result.append(str(label).strip())
+            else:
+                result.append(_humanize_source_name(name))
+        return result
 
     def personal_sources(self) -> list[str]:
         return [

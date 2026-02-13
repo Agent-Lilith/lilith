@@ -36,9 +36,7 @@ class VLLMClient:
         stop: list[str] | None = None,
         stream: bool = False,
     ) -> LLMResponse | Any:
-        logger.llm_request(
-            model=self.model, is_local=True, prompt_preview=prompt[-200:]
-        )
+        logger.llm_request(model=self.model, is_local=True, prompt=prompt)
         payload = {
             "model": self.model,
             "prompt": prompt,

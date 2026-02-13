@@ -58,15 +58,24 @@ async def _discover_capabilities(
     return []
 
 
+# User-facing labels for direct backends (no MCP discovery)
+_DIRECT_BACKEND_DISPLAY_LABELS: dict[str, str] = {
+    "calendar": "Calendar",
+    "tasks": "Tasks",
+    "web": "Web",
+}
+
+
 def _register_direct_backend_capabilities(
     registry: CapabilityRegistry,
     backends: list,
 ) -> None:
     """Register capabilities for direct (non-MCP) backends."""
     for backend in backends:
+        source_name = backend.get_source_name()
         caps = SearchCapabilities(
             schema_version="1.0",
-            source_name=backend.get_source_name(),
+            source_name=source_name,
             source_class=backend.get_source_class(),
             supported_methods=backend.get_supported_methods(),
             supported_filters=[
@@ -74,6 +83,7 @@ def _register_direct_backend_capabilities(
             ],
             max_limit=50,
             default_limit=10,
+            display_label=_DIRECT_BACKEND_DISPLAY_LABELS.get(source_name),
         )
         registry.register(caps)
 
@@ -121,6 +131,7 @@ async def setup_tools() -> ToolRegistry:
                 SearchCapabilities(
                     source_name="email",
                     source_class=SourceClass.PERSONAL,
+                    display_label="Email",
                     supported_methods=[
                         RetrievalMethod.STRUCTURED,
                         RetrievalMethod.FULLTEXT,
@@ -130,7 +141,12 @@ async def setup_tools() -> ToolRegistry:
                         FilterSpec(
                             name="from_email",
                             type="string",
-                            operators=["eq", "contains"],
+                            operators=["contains"],
+                        ),
+                        FilterSpec(
+                            name="from_name",
+                            type="string",
+                            operators=["contains"],
                         ),
                         FilterSpec(name="date_after", type="date", operators=["gte"]),
                         FilterSpec(name="date_before", type="date", operators=["lte"]),
@@ -171,6 +187,7 @@ async def setup_tools() -> ToolRegistry:
                 SearchCapabilities(
                     source_name="browser_history",
                     source_class=SourceClass.PERSONAL,
+                    display_label="Browser history",
                     supported_methods=[
                         RetrievalMethod.STRUCTURED,
                         RetrievalMethod.FULLTEXT,
@@ -189,6 +206,7 @@ async def setup_tools() -> ToolRegistry:
                 SearchCapabilities(
                     source_name="browser_bookmarks",
                     source_class=SourceClass.PERSONAL,
+                    display_label="Browser bookmarks",
                     supported_methods=[
                         RetrievalMethod.STRUCTURED,
                         RetrievalMethod.FULLTEXT,
@@ -225,8 +243,9 @@ async def setup_tools() -> ToolRegistry:
         if not whatsapp_sources:
             capabilities.register(
                 SearchCapabilities(
-                    source_name="whatsapp_messages",
+                    source_name="whatsapp",
                     source_class=SourceClass.PERSONAL,
+                    display_label="WhatsApp messages",
                     supported_methods=[
                         RetrievalMethod.STRUCTURED,
                         RetrievalMethod.FULLTEXT,
@@ -240,7 +259,7 @@ async def setup_tools() -> ToolRegistry:
                     ],
                 )
             )
-            whatsapp_sources = ["whatsapp_messages"]
+            whatsapp_sources = ["whatsapp"]
 
         dispatcher.register_mcp("whatsapp", whatsapp_sources, mcp_whatsapp_call)
         logger.info("WhatsApp MCP registered: sources=%s", whatsapp_sources)

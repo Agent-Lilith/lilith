@@ -48,6 +48,7 @@ class MCPClient:
         self._session = await self._exit_stack.enter_async_context(
             ClientSession(read_stream, write_stream)
         )
+        assert self._session is not None
         await self._session.initialize()
         logger.info(f"MCP: connected  {self._command}  {' '.join(self._args)}")
 
@@ -78,16 +79,18 @@ class MCPClient:
                 return data
 
             text = _extract_text_from_content(result.content)
-            if not text.strip():
+            if not (text and text.strip()):
                 return {"success": False, "error": "MCP tool returned empty response"}
 
-            data = json.loads(text)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as e:
+                logger.warning("MCP: tool returned non-JSON  %s", e)
+                return {"success": False, "error": f"Invalid tool response: {e!s}"}
+
             if isinstance(data, dict) and "success" in data:
                 return data
             return {"success": True, "output": text}
-        except json.JSONDecodeError as e:
-            logger.warning(f"MCP: tool returned non-JSON  {e}")
-            return {"success": False, "error": f"Invalid tool response: {e!s}"}
         except Exception as e:
             logger.exception(f"MCP: call_tool failed  {name}")
             return {"success": False, "error": f"MCP call failed: {e!s}"}

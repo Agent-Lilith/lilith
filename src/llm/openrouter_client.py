@@ -95,9 +95,7 @@ class OpenRouterClient:
     ):
         last_error: Exception | None = None
         for model in self.models:
-            logger.llm_request(
-                model=model, is_local=False, prompt_preview=prompt[-200:]
-            )
+            logger.llm_request(model=model, is_local=False, prompt=prompt)
             payload = {**payload_base, "model": model}
             self.last_model_used = None
             try:
@@ -119,9 +117,7 @@ class OpenRouterClient:
     ):
         last_error: Exception | None = None
         for model in self.models:
-            logger.llm_request(
-                model=model, is_local=False, prompt_preview=prompt[-200:]
-            )
+            logger.llm_request(model=model, is_local=False, prompt=prompt)
             payload = {**payload_base, "model": model}
             try:
                 response = await self.client.post(

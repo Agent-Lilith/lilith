@@ -72,6 +72,10 @@ class SearchCapabilities(BaseModel):
     default_limit: int = Field(default=10)
     sort_fields: list[str] = Field(default_factory=list)
     default_ranking: str = Field(default="vector")
+    display_label: str | None = Field(
+        default=None,
+        description="Short user-facing label for the agent, e.g. 'WhatsApp messages'. If absent, a fallback is derived from source_name.",
+    )
 
 
 # ---------------------------------------------------------------------------

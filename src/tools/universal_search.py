@@ -83,7 +83,11 @@ class UniversalSearchTool(Tool):
 
     @property
     def description(self) -> str:
-        return get_tool_description(self.name)
+        base = get_tool_description(self.name)
+        labels = self._orchestrator._capabilities.source_labels_for_agent()
+        if labels:
+            return base + "\n\nSearchable sources (current): " + ", ".join(labels)
+        return base
 
     @property
     def parameters(self) -> dict[str, str]:
@@ -118,6 +122,7 @@ class UniversalSearchTool(Tool):
             max_val = 20
 
         try:
+            logger.tool_execute(self.name, {"user_message": user_message[:200], "max_results": max_val})
             response: UniversalSearchResponse = await self._orchestrator.search(
                 conversation_context=(conversation_context or "").strip(),
                 user_message=(user_message or "").strip(),
@@ -126,7 +131,10 @@ class UniversalSearchTool(Tool):
             )
         except Exception as e:
             logger.error("Universal search failed: %s", e, exc_info=True)
-            return ToolResult.fail(f"Universal search failed: {e!s}")
+            fail_msg = f"Universal search failed: {e!s}"
+            logger.tool_result(self.name, 0, False, error_reason=fail_msg)
+            return ToolResult.fail(fail_msg)
 
         out = _format_response(response)
+        logger.tool_result(self.name, len(out), True, result_content=out)
         return ToolResult.ok(out)

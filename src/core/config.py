@@ -24,7 +24,7 @@ class Config:
     telegram_token: str
     telegram_allowed_users: list[int]
     openrouter_api_key: str
-    openrouter_models: list[str]  # Model IDs to try in order (fallback on 5xx/429)
+    openrouter_models: list[str]
     anthropic_api_key: str
     google_client_id: str
     google_client_secret: str
@@ -40,6 +40,8 @@ class Config:
     mcp_browser_args: list[str]
     mcp_whatsapp_command: str
     mcp_whatsapp_args: list[str]
+    session_id: str | None
+    sessions_dir: Path
 
     @classmethod
     def load(cls) -> "Config":
@@ -94,6 +96,8 @@ class Config:
             mcp_browser_args=mcp_args("MCP_BROWSER_DIR", "lilith-browser"),
             mcp_whatsapp_command=os.getenv("MCP_WHATSAPP_COMMAND", "uv"),
             mcp_whatsapp_args=mcp_args("MCP_WHATSAPP_DIR", "lilith-whatsapp"),
+            session_id=os.getenv("LILITH_SESSION_ID", "").strip() or None,
+            sessions_dir=project_root / "logs" / "sessions",
         )
 
     def validate(self) -> list[str]:

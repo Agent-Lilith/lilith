@@ -27,7 +27,10 @@ class TestRouterLogic:
                     supported_filters=[
                         FilterSpec(
                             name="from_email", type="string", operators=["contains"]
-                        )
+                        ),
+                        FilterSpec(
+                            name="from_name", type="string", operators=["contains"]
+                        ),
                     ],
                 )
             if name == "calendar":
@@ -76,19 +79,32 @@ class TestRouterLogic:
         assert sources == ["web"]
 
     def test_filter_extraction_email(self, router):
-        """Test extraction of email-specific filters."""
+        """Test extraction of email sender filters (from_name and/or from_email)."""
         intent = {
-            "entities": [{"role": "sender", "name": "alice@example.com"}],
+            "entities": [{"role": "sender", "name": "Alice"}],
             "complexity": "simple",
         }
-        plan = router.route(intent, "Email from alice@example.com")
+        plan = router.route(intent, "Email from Alice")
 
         email_decision = next(d for d in plan.decisions if d.source == "email")
         filters = email_decision.filters
 
         assert len(filters) == 1
-        assert filters[0]["field"] == "from_email"
-        assert filters[0]["value"] == "alice@example.com"
+        assert filters[0]["field"] == "from_name"
+        assert filters[0]["value"] == "Alice"
+
+    def test_filter_extraction_from_name_and_email(self, router):
+        """When entity has both name and email, both filters are emitted."""
+        intent = {
+            "entities": [{"role": "sender", "name": "Alice", "email": "alice@example.com"}],
+            "complexity": "simple",
+        }
+        plan = router.route(intent, "Email from Alice")
+
+        email_decision = next(d for d in plan.decisions if d.source == "email")
+        filters = {f["field"]: f["value"] for f in email_decision.filters}
+        assert filters.get("from_name") == "Alice"
+        assert filters.get("from_email") == "alice@example.com"
 
     @patch("src.orchestrators.search.router.datetime")
     @patch("src.orchestrators.search.router.config")

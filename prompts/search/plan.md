@@ -21,7 +21,7 @@ Return a JSON array of search steps. Each step is an object with:
 
 ## Filter Reference
 
-- **email**: from_email (contains), to_email (contains), labels (in), has_attachments (eq), date_after (gte), date_before (lte)
+- **email**: from_name (contains), from_email (contains), to_email (contains), labels (in), has_attachments (eq), date_after (gte), date_before (lte)
 - **browser_history**: date_after (gte), date_before (lte), domain (contains)
 - **browser_bookmarks**: folder (contains), date_after (gte), date_before (lte)
 - **calendar**: range_preset (eq: "today", "next_7_days", "next_30_days")

@@ -34,6 +34,7 @@ class RoutingPlan:
     decisions: list[RoutingDecision]
     complexity: str  # "simple" or "complex"
     reasoning: str = ""
+    used_default_sources: bool = False
 
 
 # Source hint keywords -> source names.
@@ -60,12 +61,12 @@ _SOURCE_HINTS: dict[str, list[str]] = {
     "search": ["web"],
     "news": ["web"],
     "latest": ["web"],
-    "whatsapp": ["whatsapp_messages"],
-    "chat": ["whatsapp_messages"],
-    "message": ["email", "whatsapp_messages"],
+    "whatsapp": ["whatsapp"],
+    "chat": ["whatsapp"],
+    "message": ["email", "whatsapp"],
 }
 
-# Filter-related patterns
+# Filter-related patterns (keys match capability filter names)
 _FILTER_PATTERNS: dict[str, re.Pattern] = {
     "from_email": re.compile(r"\bfrom\s+(\S+@\S+)", re.IGNORECASE),
     "domain": re.compile(
@@ -124,7 +125,7 @@ class RetrievalRouter:
         complexity = self._classify_complexity(intent, query)
 
         # 2. Select target sources
-        target_sources = self._select_sources(intent, query)
+        target_sources, used_default_sources = self._select_sources(intent, query)
 
         # 3. Extract filters from intent
         filters = self._extract_filters(intent, query)
@@ -155,7 +156,37 @@ class RetrievalRouter:
             decisions=decisions,
             complexity=complexity,
             reasoning=reasoning,
+            used_default_sources=used_default_sources,
         )
+
+    def decisions_for_sources(
+        self,
+        sources: list[str],
+        query: str,
+        intent: dict[str, Any],
+        extra_filters: list[dict[str, Any]] | None = None,
+    ) -> list[RoutingDecision]:
+        """Build routing decisions for an explicit source list. Used by multi-hop step execution."""
+        filters = self._extract_filters(intent, query)
+        if extra_filters:
+            filters = filters + extra_filters
+        available = set(self._capabilities.all_sources())
+        decisions: list[RoutingDecision] = []
+        for source in sources:
+            if source not in available:
+                logger.warning("Router: skipping unknown source %s", source)
+                continue
+            methods = self._select_methods(source, query, filters, intent)
+            source_filters = self._filter_for_source(source, filters)
+            decisions.append(
+                RoutingDecision(
+                    source=source,
+                    methods=methods,
+                    query=query,
+                    filters=source_filters,
+                )
+            )
+        return decisions
 
     def _classify_complexity(self, intent: dict[str, Any], query: str) -> str:
         """Classify query as simple or complex."""
@@ -180,11 +211,13 @@ class RetrievalRouter:
 
         return "simple"
 
-    def _select_sources(self, intent: dict[str, Any], query: str) -> list[str]:
-        """Determine which sources to query."""
+    def _select_sources(
+        self, intent: dict[str, Any], query: str
+    ) -> tuple[list[str], bool]:
+        """Determine which sources to query. Returns (sources, used_default_sources)."""
         available = set(self._capabilities.all_sources())
         if not available:
-            return []
+            return [], False
 
         # Check for explicit source hints in intent
         hints = intent.get("source_hints") or []
@@ -202,7 +235,7 @@ class RetrievalRouter:
                         if keyword in hint_lower:
                             target.update(s for s in sources if s in available)
             if target:
-                return sorted(target)
+                return sorted(target), False
 
         # Check for source keywords in query
         query_lower = query.lower()
@@ -211,11 +244,12 @@ class RetrievalRouter:
             if keyword in query_lower:
                 query_target.update(s for s in sources if s in available)
         if query_target:
-            return sorted(query_target)
+            return sorted(query_target), False
 
         # Default: query all personal sources (skip web unless explicitly requested)
         personal = self._capabilities.personal_sources()
-        return sorted(personal) if personal else sorted(available)
+        sources = sorted(personal) if personal else sorted(available)
+        return sources, True
 
     def _extract_filters(
         self, intent: dict[str, Any], query: str
@@ -223,16 +257,22 @@ class RetrievalRouter:
         """Extract filter clauses from intent and query patterns."""
         filters: list[dict[str, Any]] = []
 
-        # From intent entities with roles
+        # From intent entities with roles (agent can fill name and/or email for sender)
         entities = intent.get("entities") or []
         for entity in entities:
             if isinstance(entity, dict):
                 role = entity.get("role", "")
-                name = entity.get("name", "")
-                if role == "sender" and name:
-                    filters.append(
-                        {"field": "from_email", "operator": "contains", "value": name}
-                    )
+                name = (entity.get("name") or "").strip()
+                email = (entity.get("email") or "").strip()
+                if role == "sender":
+                    if name:
+                        filters.append(
+                            {"field": "from_name", "operator": "contains", "value": name}
+                        )
+                    if email:
+                        filters.append(
+                            {"field": "from_email", "operator": "contains", "value": email}
+                        )
                 elif role == "recipient" and name:
                     filters.append(
                         {"field": "to_email", "operator": "contains", "value": name}

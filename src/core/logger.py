@@ -67,6 +67,12 @@ _log_page_index: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _log_page_hint: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "log_page_hint", default=None
 )
+_prompt_role: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "prompt_role", default=None
+)
+
+_CONVERSATION_TAIL_CHARS = 500
+_DYNAMIC_PROMPT_ROLES = frozenset({"intent", "plan", "refine", "entity_extract"})
 
 
 def _use_color() -> bool:
@@ -172,6 +178,12 @@ class LilithLogger:
         with self._file_lock:
             self._log_file_handle.write(event.to_json() + "\n")
             self._log_file_handle.flush()
+        try:
+            from src.core.session_recorder import get_session_recorder
+
+            get_session_recorder().on_log_event(event)
+        except Exception:
+            pass
 
     def _timestamp(self) -> str:
         return datetime.now().isoformat()
@@ -185,6 +197,10 @@ class LilithLogger:
 
     def set_tool_step(self, step: str | None) -> None:
         _log_tool_step.set(step)
+
+    def set_prompt_role(self, role: str | None) -> None:
+        """Set the role for the next LLM request. main_agent = store metadata only; intent/plan/refine/entity_extract = store full prompt."""
+        _prompt_role.set(role)
 
     def set_page_index(self, index: int | None, total: int | None = None) -> None:
         if index is None or total is None or total <= 0:
@@ -215,7 +231,7 @@ class LilithLogger:
         event = LogEvent(
             event_type="USER_INPUT",
             timestamp=self._timestamp(),
-            data={"message": message[:500]},
+            data={"message": message},
         )
         self.log_event(event)
         self.console.info(f"User: {message[:100]}{'...' if len(message) > 100 else ''}")
@@ -231,17 +247,39 @@ class LilithLogger:
             f"📋 Context: {token_count} tokens, {message_count} messages"
         )
 
-    def llm_request(self, model: str, is_local: bool, prompt_preview: str = ""):
+    def llm_request(self, model: str, is_local: bool, prompt: str = ""):
         self._llm_was_local = is_local
         _llm_ctx.set((time.monotonic(), model))
+        role = _prompt_role.get()
+        _prompt_role.set(None)
+
+        if role == "main_agent":
+            data: dict[str, Any] = {
+                "model": model,
+                "is_local": is_local,
+                "prompt_role": "main_agent",
+                "system_ref": "soul",
+                "conversation_tail": prompt[-_CONVERSATION_TAIL_CHARS:] if len(prompt) > _CONVERSATION_TAIL_CHARS else prompt,
+                "prompt_length": len(prompt),
+            }
+        elif role in _DYNAMIC_PROMPT_ROLES:
+            data = {
+                "model": model,
+                "is_local": is_local,
+                "prompt_role": role,
+                "prompt": prompt,
+            }
+        else:
+            data = {
+                "model": model,
+                "is_local": is_local,
+                "prompt_role": role or "unknown",
+                "prompt": prompt,
+            }
         event = LogEvent(
             event_type="LLM_REQUEST",
             timestamp=self._timestamp(),
-            data={
-                "model": model,
-                "is_local": is_local,
-                "prompt_preview": prompt_preview[:200],
-            },
+            data=data,
         )
         self.log_event(event)
         if _log_in_tool.get():
@@ -349,6 +387,7 @@ class LilithLogger:
         success: bool,
         *,
         error_reason: str | None = None,
+        result_content: str | None = None,
     ) -> None:
         # Use tool-level prefix for the Done line before clearing _log_in_tool
         done_prefix = self._prefix()
@@ -367,9 +406,9 @@ class LilithLogger:
             "duration_seconds": round(elapsed, 3),
         }
         if not success and error_reason:
-            data["error_reason"] = (
-                error_reason[:500] if len(error_reason) > 500 else error_reason
-            )
+            data["error_reason"] = error_reason
+        if result_content is not None:
+            data["result_content"] = result_content
         event = LogEvent(
             event_type="TOOL_RESULT", timestamp=self._timestamp(), data=data
         )
@@ -394,7 +433,7 @@ class LilithLogger:
         event = LogEvent(
             event_type="FINAL_RESPONSE",
             timestamp=self._timestamp(),
-            data={"response": response[:500], "length": len(response)},
+            data={"response": response, "length": len(response)},
         )
         self.log_event(event)
         text = response.strip().replace("\n", " ")
@@ -422,6 +461,12 @@ class LilithLogger:
         )
         _log_in_turn.set(False)
         self.console.info(_TURN_SEP)
+        try:
+            from src.core.session_recorder import get_session_recorder
+
+            get_session_recorder().on_turn_end()
+        except Exception:
+            pass
 
     def thought(self, content: str):
         if not content:
@@ -430,7 +475,7 @@ class LilithLogger:
         event = LogEvent(
             event_type="THOUGHT",
             timestamp=self._timestamp(),
-            data={"thought": content[:1000]},
+            data={"thought": content},
         )
         self.log_event(event)
         try:
@@ -535,8 +580,11 @@ class LilithLogger:
         self.console.exception(f"❌ {message}", *args, **kwargs)
 
     def debug(self, message: str, *args, **kwargs):
+        interpolated = (message % args) if args else message
         event = LogEvent(
-            event_type="DEBUG", timestamp=self._timestamp(), data={"message": message}
+            event_type="DEBUG",
+            timestamp=self._timestamp(),
+            data={"message": interpolated},
         )
         self.log_event(event)
 

@@ -45,6 +45,7 @@ class Agent:
     _pending_confirm: dict | None = field(default=None, repr=False)
     _last_search_result: str | None = field(default=None, repr=False)
     _last_search_user_msg: str | None = field(default=None, repr=False)
+    _last_search_context: str | None = field(default=None, repr=False)
 
     @classmethod
     async def create(cls) -> "Agent":
@@ -168,6 +169,7 @@ class Agent:
             is_thinking = False
             thought_tag_found = False
 
+            logger.set_prompt_role("main_agent")
             generator = await client.generate(
                 prompt=prompt,
                 max_tokens=2048,
@@ -240,6 +242,7 @@ class Agent:
                 return out
 
         msg = "I've reached my step limit for this request. The tool results above are what I gathered; ask me to summarize them if you want a combined answer."
+        logger.final_response(msg)
         if on_event is not None:
             await on_event("final_response", msg)
         return ChatResult(response=msg, pending_confirm=None)
@@ -313,8 +316,13 @@ class Agent:
             await on_event("tool_call", {"name": tool_name, "args": args})
         if tool_name == "universal_search":
             user_msg = self._get_last_user_message()
-            # Dedup: if same user message, return cached result
-            if self._last_search_user_msg == user_msg and self._last_search_result:
+            conversation_context = self._get_conversation_context()
+            # Dedup: same user message and same conversation context = same logical search
+            if (
+                self._last_search_user_msg == user_msg
+                and self._last_search_context == conversation_context
+                and self._last_search_result
+            ):
                 logger.info(
                     "Search dedup: returning cached result for '%s'", user_msg[:60]
                 )
@@ -330,7 +338,7 @@ class Agent:
             args = {
                 **args,
                 "user_message": user_msg,
-                "conversation_context": self._get_conversation_context(),
+                "conversation_context": conversation_context,
             }
         tool = self.tool_registry.get(tool_name)
         if not tool:
@@ -354,9 +362,10 @@ class Agent:
                     result = ToolResult.fail(str(e))
                     run.end(outputs={"success": False, "error": str(e)})
         result_content = result.output if result.success else result.error
-        # Cache search results for dedup
+        # Cache search results for dedup (key = user message + conversation context)
         if tool_name == "universal_search":
             self._last_search_user_msg = self._get_last_user_message()
+            self._last_search_context = self._get_conversation_context()
             self._last_search_result = result_content
         result_msg = f"TOOL_RESULT({tool_name}): {result_content}"
         self.conversation.append(Message(role="user", content=result_msg))

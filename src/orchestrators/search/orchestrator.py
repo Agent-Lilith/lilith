@@ -24,10 +24,29 @@ from src.llm.vllm_client import create_client
 from src.observability import traceable
 from src.orchestrators.search.capabilities import CapabilityRegistry
 from src.orchestrators.search.dispatcher import MCPSearchDispatcher
+from src.orchestrators.search.entity_extraction import extract_entity
 from src.orchestrators.search.fusion import WeightedFusionRanker
 from src.orchestrators.search.interface import SearchBackend
 from src.orchestrators.search.models import UniversalSearchResponse
 from src.orchestrators.search.router import RetrievalRouter, RoutingDecision
+
+
+def _validate_retrieval_plan(
+    plan: Any, available_sources: set[str]
+) -> list[dict[str, Any]] | None:
+    """Return plan if valid (2+ steps, each source in available_sources). Else None."""
+    if not plan or not isinstance(plan, list) or len(plan) < 2:
+        return None
+    for step in plan:
+        if not isinstance(step, dict):
+            return None
+        sources = step.get("sources")
+        if not sources or not isinstance(sources, list):
+            return None
+        for s in sources:
+            if s not in available_sources:
+                return None
+    return plan
 
 
 def _extract_json(text: str) -> str:
@@ -111,6 +130,7 @@ class UniversalSearchOrchestrator:
         """Extract structured intent from conversation context."""
         prompt = self._prompt_intent.replace("{context}", context)
         logger.set_tool_step("intent")
+        logger.set_prompt_role("intent")
         try:
             raw = await self._generate(prompt, max_tokens=500)
             return _parse_json_object(
@@ -121,12 +141,14 @@ class UniversalSearchOrchestrator:
                     "temporal": None,
                     "source_hints": [],
                     "complexity": "simple",
+                    "retrieval_plan": None,
                     "retrieval_hints": [],
                     "ambiguities": [],
                 },
             )
         finally:
             logger.set_tool_step(None)
+            logger.set_prompt_role(None)
 
     @traceable(name="search_execute_routing", run_type="chain")
     async def _execute_routing(
@@ -318,12 +340,101 @@ class UniversalSearchOrchestrator:
                         )
                     )
 
+        elif reason == "single_source":
+            # Retry sources that were in the plan but returned no results (same query/filters)
+            actual_sources = {r.source for r in results}
+            for d in previous_decisions:
+                if d.source not in actual_sources:
+                    refined.append(
+                        RoutingDecision(
+                            source=d.source,
+                            methods=d.methods,
+                            query=d.query,
+                            filters=d.filters,
+                        )
+                    )
+
         logger.info(
             "Refinement (reason=%s): %s additional decisions",
             reason,
             len(refined),
         )
         return refined[:4]  # Cap at 4 refinement steps
+
+    @traceable(name="search_multihop", run_type="chain")
+    async def _run_multihop(
+        self,
+        query: str,
+        intent: dict[str, Any],
+        plan: list[dict[str, Any]],
+    ) -> tuple[list[SearchResultV1], list[RoutingDecision], list[str]]:
+        """Execute retrieval_plan step by step; extract entity between steps for entity_from_previous."""
+        all_results: list[SearchResultV1] = []
+        all_decisions: list[RoutingDecision] = []
+        errors: list[str] = []
+        extra_filters: list[dict[str, Any]] | None = None
+
+        for step_idx, step in enumerate(plan):
+            sources = step.get("sources") or []
+            entity_from_previous = step.get("entity_from_previous") is True
+
+            # Restrict step to sources that support the extracted filters when this step
+            # consumes entity_from_previous (e.g. "email from that person"). Otherwise we
+            # would query all step sources (e.g. email + whatsapp); sources that don't
+            # support from_name/from_email get the raw query and can return irrelevant
+            # hits (e.g. same WhatsApp chat again). Future-proof: we use capability
+            # registry (sources_supporting_filter), so any new source that declares
+            # from_name/from_email will be included automatically; no hardcoded list.
+            if entity_from_previous and extra_filters:
+                from_fields = {"from_name", "from_email"}
+                filter_fields = {
+                    f.get("field") for f in extra_filters if f.get("field")
+                }
+                if filter_fields & from_fields:
+                    supporting = set()
+                    for field in from_fields:
+                        supporting.update(
+                            self._capabilities.sources_supporting_filter(field)
+                        )
+                    if supporting:
+                        sources = [s for s in sources if s in supporting]
+                        logger.info(
+                            "Multihop step %s: restricted to from-capable sources %s",
+                            step_idx,
+                            sources,
+                        )
+
+            decisions = self._router.decisions_for_sources(
+                sources=sources,
+                query=query,
+                intent=intent,
+                extra_filters=extra_filters,
+            )
+            if not decisions:
+                logger.warning(
+                    "Multihop step %s: no decisions for sources %s", step_idx, sources
+                )
+                continue
+
+            step_results, step_errors = await self._execute_routing(decisions)
+            all_results.extend(step_results)
+            all_decisions.extend(decisions)
+            errors.extend(step_errors)
+
+            # Prepare filters for next step if it needs entity from this step
+            next_step = plan[step_idx + 1] if step_idx + 1 < len(plan) else None
+            if next_step and next_step.get("entity_from_previous") and step_results:
+                entity = await extract_entity(step_results, llm_generate=self._generate)
+                extra_filters = entity.to_filters()
+                if not extra_filters:
+                    logger.warning(
+                        "Multihop: no entity extracted from step %s for next step",
+                        step_idx,
+                    )
+            else:
+                extra_filters = None
+
+        return all_results, all_decisions, errors
 
     @traceable(name="universal_search", run_type="chain")
     async def search(
@@ -378,44 +489,95 @@ class UniversalSearchOrchestrator:
         intent = await self._analyze_intent(context)
         timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
         logger.info(
-            "Intent: %s | entities=%s | temporal=%s | hints=%s | complexity=%s",
+            "Intent: %s | entities=%s | temporal=%s | hints=%s | complexity=%s | plan_steps=%s",
             intent.get("intent"),
             intent.get("entities"),
             intent.get("temporal"),
             intent.get("source_hints"),
             intent.get("complexity"),
+            len(intent.get("retrieval_plan") or []),
         )
 
-        # 3. Route (deterministic)
-        t0 = time.monotonic()
-        routing_plan = self._router.route(intent, query)
-        timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
-
-        if not routing_plan.decisions:
-            return UniversalSearchResponse(
-                results=[],
-                errors=["No search backends available for this query"],
-                meta={
-                    "query": query,
-                    "sources_queried": [],
-                    "methods_used": [],
-                    "iterations": 0,
-                    "total_results": 0,
-                    "complexity": routing_plan.complexity,
-                    "timing_ms": timing_ms,
-                },
+        available_sources = set(self._capabilities.all_sources())
+        plan = intent.get("retrieval_plan")
+        validated_plan = _validate_retrieval_plan(plan, available_sources)
+        use_multihop = (
+            intent.get("complexity") == "multi_hop" and validated_plan is not None
+        )
+        if intent.get("complexity") == "multi_hop" and validated_plan is None:
+            logger.info(
+                "Multihop plan missing or invalid, using single-step search",
             )
 
-        # 4. Complexity gate
-        # Simple queries: execute routing directly, no LLM plan
-        # Complex queries: could use LLM planner, but for now we trust the router
-        # (LLM planning is optional enhancement for complex multi-hop queries)
+        if use_multihop:
+            # 3a. Multi-hop: run steps sequentially with entity extraction between steps
+            t0 = time.monotonic()
+            all_results, decisions_for_run, exec_errors = await self._run_multihop(
+                query, intent, validated_plan
+            )
+            timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
+            timing_ms["execution"] = timing_ms["routing"]
+            errors.extend(exec_errors)
+            complexity_for_meta = "complex"
+            if not decisions_for_run:
+                return UniversalSearchResponse(
+                    results=[],
+                    errors=errors or ["Multi-hop produced no decisions."],
+                    meta={
+                        "query": query,
+                        "sources_queried": [],
+                        "methods_used": [],
+                        "iterations": 0,
+                        "total_results": 0,
+                        "complexity": complexity_for_meta,
+                        "timing_ms": timing_ms,
+                    },
+                )
+        else:
+            # 3. Single-step: route then execute (fallback when no valid retrieval_plan)
+            t0 = time.monotonic()
+            routing_plan = self._router.route(intent, query)
+            timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
 
-        # 5. Execute searches
-        t0 = time.monotonic()
-        all_results, exec_errors = await self._execute_routing(routing_plan.decisions)
-        timing_ms["execution"] = round((time.monotonic() - t0) * 1000, 1)
-        errors.extend(exec_errors)
+            if not routing_plan.decisions:
+                return UniversalSearchResponse(
+                    results=[],
+                    errors=["No search backends available for this query"],
+                    meta={
+                        "query": query,
+                        "sources_queried": [],
+                        "methods_used": [],
+                        "iterations": 0,
+                        "total_results": 0,
+                        "complexity": routing_plan.complexity,
+                        "timing_ms": timing_ms,
+                    },
+                )
+
+            if getattr(routing_plan, "used_default_sources", False):
+                return UniversalSearchResponse(
+                    results=[],
+                    notes=["No personal data sources matched for this query."],
+                    errors=[],
+                    meta={
+                        "query": query,
+                        "sources_queried": [],
+                        "methods_used": [],
+                        "iterations": 0,
+                        "total_results": 0,
+                        "complexity": routing_plan.complexity,
+                        "timing_ms": timing_ms,
+                    },
+                )
+
+            t0 = time.monotonic()
+            all_results, exec_errors = await self._execute_routing(
+                routing_plan.decisions
+            )
+            timing_ms["execution"] = round((time.monotonic() - t0) * 1000, 1)
+            errors.extend(exec_errors)
+            decisions_for_run = routing_plan.decisions
+            complexity_for_meta = routing_plan.complexity
 
         # 6. Determine if query is personal
         is_personal = self._is_personal_query(intent)
@@ -428,12 +590,12 @@ class UniversalSearchOrchestrator:
                 should_refine, reason = self._should_refine(
                     all_results,
                     intent,
-                    routing_plan.decisions,
+                    decisions_for_run,
                 )
                 if not should_refine:
                     # Note when we have explicit filters with no results
                     if not all_results:
-                        has_filters = any(d.filters for d in routing_plan.decisions)
+                        has_filters = any(d.filters for d in decisions_for_run)
                         if has_filters:
                             notes.append("No data found for the requested criteria.")
                     break
@@ -444,7 +606,7 @@ class UniversalSearchOrchestrator:
                     context,
                     intent,
                     all_results,
-                    routing_plan.decisions,
+                    decisions_for_run,
                     reason,
                 )
                 if not refined_decisions:
@@ -467,8 +629,8 @@ class UniversalSearchOrchestrator:
         timing_ms["fusion"] = round((time.monotonic() - t0) * 1000, 1)
 
         # Collect metadata
-        sources_queried = list({d.source for d in routing_plan.decisions})
-        methods_used = list({m for d in routing_plan.decisions for m in d.methods})
+        sources_queried = list({d.source for d in decisions_for_run})
+        methods_used = list({m for d in decisions_for_run for m in d.methods})
         timing_ms["total"] = round((time.monotonic() - pipeline_start) * 1000, 1)
 
         logger.info(
@@ -490,7 +652,7 @@ class UniversalSearchOrchestrator:
                 "methods_used": methods_used,
                 "iterations": iterations,
                 "total_results": len(ranked),
-                "complexity": routing_plan.complexity,
+                "complexity": complexity_for_meta,
                 "timing_ms": timing_ms,
             },
         )
