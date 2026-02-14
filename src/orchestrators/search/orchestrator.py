@@ -725,13 +725,23 @@ class UniversalSearchOrchestrator:
                         "iterations": 0,
                         "total_results": 0,
                         "complexity": complexity_for_meta,
+                        "source_match_trace": [],
                         "timing_ms": timing_ms,
                     },
                 )
+            source_match_trace: list[dict[str, Any]] = []
         else:
             # 3. Single-step: route then execute (fallback when no valid retrieval_plan)
             t0 = time.monotonic()
             routing_plan = self._router.route(intent, query)
+            source_match_trace = [
+                {
+                    "source": m.source,
+                    "confidence": m.confidence,
+                    "reasons": m.reasons,
+                }
+                for m in routing_plan.source_matches
+            ]
             timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
 
             if not routing_plan.decisions:
@@ -745,6 +755,7 @@ class UniversalSearchOrchestrator:
                         "iterations": 0,
                         "total_results": 0,
                         "complexity": routing_plan.complexity,
+                        "source_match_trace": source_match_trace,
                         "timing_ms": timing_ms,
                     },
                 )
@@ -852,6 +863,7 @@ class UniversalSearchOrchestrator:
             "iterations": iterations,
             "total_results": len(ranked),
             "complexity": complexity_for_meta,
+            "source_match_trace": source_match_trace,
             "timing_ms": timing_ms,
         }
         if count is not None:

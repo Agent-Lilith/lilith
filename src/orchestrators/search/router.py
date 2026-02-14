@@ -42,6 +42,16 @@ class RoutingPlan:
     complexity: RoutingComplexity
     reasoning: str = ""
     used_default_sources: bool = False
+    source_matches: list["SourceMatch"] = field(default_factory=list)
+
+
+@dataclass
+class SourceMatch:
+    """Scored source hint match with lightweight explanations."""
+
+    source: str
+    confidence: float
+    reasons: list[str] = field(default_factory=list)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -50,6 +60,9 @@ def _tokenize(text: str) -> list[str]:
 
 class RetrievalRouter:
     """Routes queries to appropriate sources and methods based on capabilities."""
+
+    _MATCH_THRESHOLD = 0.3
+    _MATCH_TOP_N = 3
 
     def __init__(self, capabilities: CapabilityRegistry) -> None:
         self._capabilities = capabilities
@@ -60,11 +73,16 @@ class RetrievalRouter:
         if not text or len(text) > 200:
             return None
 
-        hints = self._match_sources_from_text(text)
+        hint_matches = self._match_sources_from_text(
+            text,
+            threshold=self._MATCH_THRESHOLD,
+            top_n=self._MATCH_TOP_N,
+        )
+        hints = [m.source for m in hint_matches]
         if not hints:
             return None
 
-        ordered_hints = self._order_sources_by_mention(text, hints)
+        ordered_hints = [m.source for m in hint_matches]
         temporal = self._extract_temporal_from_text(text)
         retrieval_plan = self._build_fast_path_retrieval_plan(
             text=text,
@@ -87,7 +105,9 @@ class RetrievalRouter:
     def route(self, intent: dict[str, Any], query: str) -> RoutingPlan:
         """Build a routing plan from intent analysis and query text."""
         complexity = self._classify_complexity(intent)
-        target_sources, used_default_sources = self._select_sources(intent, query)
+        target_sources, used_default_sources, source_matches = self._select_sources(
+            intent, query
+        )
         filters = self._extract_filters(intent)
         mode, group_by, aggregate_top_n = self._extract_mode_and_group_by(
             intent, target_sources
@@ -124,6 +144,7 @@ class RetrievalRouter:
             complexity=complexity,
             reasoning=reasoning,
             used_default_sources=used_default_sources,
+            source_matches=source_matches,
         )
 
     def decisions_for_sources(
@@ -213,24 +234,39 @@ class RetrievalRouter:
 
     def _select_sources(
         self, intent: dict[str, Any], query: str
-    ) -> tuple[list[str], bool]:
-        """Determine which sources to query. Returns (sources, used_default_sources)."""
+    ) -> tuple[list[str], bool, list[SourceMatch]]:
+        """Determine which sources to query.
+
+        Returns: (sources, used_default_sources, source_matches)
+        """
         available = set(self._capabilities.all_sources())
         if not available:
-            return [], False
+            return [], False, []
 
         hints = intent.get("source_hints") or []
-        hinted = self._resolve_sources_from_hints(hints)
-        if hinted:
-            return sorted(hinted), False
+        if hints:
+            hint_text = " ".join(str(h or "") for h in hints)
+            hint_matches = self._match_sources_from_text(
+                hint_text,
+                threshold=self._MATCH_THRESHOLD,
+                top_n=self._MATCH_TOP_N,
+            )
+            hinted = [m.source for m in hint_matches]
+            if hinted:
+                return hinted, False, hint_matches
 
-        query_target = self._match_sources_from_text(query)
+        query_matches = self._match_sources_from_text(
+            query,
+            threshold=self._MATCH_THRESHOLD,
+            top_n=self._MATCH_TOP_N,
+        )
+        query_target = [m.source for m in query_matches]
         if query_target:
-            return sorted(query_target), False
+            return query_target, False, query_matches
 
         personal = self._capabilities.personal_sources()
         sources = sorted(personal) if personal else sorted(available)
-        return sources, True
+        return sources, True, []
 
     def _resolve_sources_from_hints(self, hints: list[Any]) -> set[str]:
         available = set(self._capabilities.all_sources())
@@ -270,22 +306,103 @@ class RetrievalRouter:
             aliases[source] = {a for a in alias_set if a}
         return aliases
 
-    def _match_sources_from_text(self, text: str) -> list[str]:
+    def _match_sources_from_text(
+        self,
+        text: str,
+        threshold: float = 0.0,
+        top_n: int | None = None,
+    ) -> list[SourceMatch]:
         text_norm = (text or "").lower().strip()
         if not text_norm:
             return []
         aliases = self._build_source_aliases()
-        matched: set[str] = set()
+        query_tokens = set(_tokenize(text_norm))
+        scored: list[tuple[float, int, SourceMatch]] = []
+
         for source, source_aliases in aliases.items():
+            score = 0.0
+            reasons: list[str] = []
+            first_pos: int | None = None
+
             for alias in source_aliases:
-                if " " in alias:
-                    if alias in text_norm:
-                        matched.add(source)
-                        break
-                elif re.search(rf"\b{re.escape(alias)}\b", text_norm):
-                    matched.add(source)
-                    break
-        return sorted(matched)
+                if not alias:
+                    continue
+                alias_norm = alias.lower().strip()
+                if not alias_norm:
+                    continue
+
+                found = False
+                if " " in alias_norm:
+                    pos = text_norm.find(alias_norm)
+                    if pos >= 0:
+                        found = True
+                else:
+                    m = re.search(rf"\b{re.escape(alias_norm)}\b", text_norm)
+                    pos = m.start() if m else -1
+                    if m:
+                        found = True
+
+                if found:
+                    phrase_bonus = 0.35
+                    score += phrase_bonus
+                    if " " in alias_norm:
+                        reasons.append(f"phrase_match:{alias_norm}")
+                    else:
+                        reasons.append(f"token_match:{alias_norm}")
+                    if first_pos is None or pos < first_pos:
+                        first_pos = pos
+
+                if text_norm == alias_norm:
+                    score += 0.5
+                    reasons.append(f"exact_alias:{alias_norm}")
+
+                neg_pattern = (
+                    rf"\b(?:not|without|except|excluding|instead of)\s+"
+                    rf"{re.escape(alias_norm)}\b"
+                )
+                if re.search(neg_pattern, text_norm):
+                    score -= 0.7
+                    reasons.append(f"negative_evidence:{alias_norm}")
+
+            source_tokens = {
+                t for a in source_aliases for t in _tokenize(a) if len(t) >= 3
+            }
+            overlap = query_tokens & source_tokens
+            if source_tokens and overlap:
+                overlap_ratio = len(overlap) / len(source_tokens)
+                token_score = min(0.35, overlap_ratio * 0.35)
+                score += token_score
+                reasons.append(
+                    "token_overlap:" + ",".join(sorted(overlap)) + f":{token_score:.2f}"
+                )
+
+            if first_pos is not None:
+                pos_bonus = 0.2 * (1.0 - min(first_pos, 200) / 200.0)
+                score += max(0.0, pos_bonus)
+                reasons.append(f"position_bonus:{pos_bonus:.2f}")
+
+            confidence = max(0.0, min(1.0, score))
+            if confidence <= 0:
+                continue
+            scored.append(
+                (
+                    confidence,
+                    first_pos if first_pos is not None else 9999,
+                    SourceMatch(
+                        source=source,
+                        confidence=round(confidence, 3),
+                        reasons=reasons[:6],
+                    ),
+                )
+            )
+
+        scored.sort(key=lambda x: (-x[0], x[1], x[2].source))
+        matches = [m for _, _, m in scored]
+        if threshold > 0:
+            matches = [m for m in matches if m.confidence >= threshold]
+        if top_n is not None and top_n > 0:
+            matches = matches[:top_n]
+        return matches
 
     def _order_sources_by_mention(
         self, text: str, candidate_sources: list[str]

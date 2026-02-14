@@ -149,6 +149,28 @@ class TestRouterLogic:
         plan = router.route(intent, "anything")
         assert plan.complexity == "complex"
 
+    def test_scored_source_matches_include_confidence_and_reasons(self, router):
+        matches = router._match_sources_from_text(
+            "Search web and email today",
+            threshold=0.3,
+            top_n=3,
+        )
+        assert matches
+        assert len(matches) <= 3
+        assert matches[0].confidence >= matches[-1].confidence
+        assert all(m.reasons for m in matches)
+        assert {m.source for m in matches}.issuperset({"web", "email"})
+
+    def test_negative_evidence_penalizes_source_match(self, router):
+        matches = router._match_sources_from_text(
+            "Use web results, not email",
+            threshold=0.3,
+            top_n=3,
+        )
+        sources = {m.source for m in matches}
+        assert "web" in sources
+        assert "email" not in sources
+
     def test_fast_path_intent_builds_generic_multihop_plan(self, router):
         intent = router.infer_fast_path_intent(
             "Find latest calendar items and latest email from that person"
