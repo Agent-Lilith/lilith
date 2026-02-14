@@ -31,6 +31,7 @@ from src.orchestrators.search.constants import (
 from src.orchestrators.search.dispatcher import DispatcherResult, MCPSearchDispatcher
 from src.orchestrators.search.entity_extraction import extract_entity
 from src.orchestrators.search.fusion import WeightedFusionRanker
+from src.orchestrators.search.intent_modules import DeterministicIntentAnalyzer
 from src.orchestrators.search.interface import SearchBackend
 from src.orchestrators.search.models import UniversalSearchResponse
 from src.orchestrators.search.router import RetrievalRouter, RoutingDecision
@@ -109,6 +110,7 @@ class UniversalSearchOrchestrator:
         self._dispatcher = dispatcher
         self._direct_backends = {b.get_source_name(): b for b in direct_backends}
         self._router = RetrievalRouter(capabilities)
+        self._intent_analyzer = DeterministicIntentAnalyzer()
         self._fusion = WeightedFusionRanker()
         self._max_refinement_rounds = max(0, max_refinement_rounds)
         self._prompt_intent = load_search_prompt("intent")
@@ -620,6 +622,7 @@ class UniversalSearchOrchestrator:
         8. Return results
         """
         pipeline_start = time.monotonic()
+        intent_trace: dict[str, Any] = {}
 
         # 1. Build context
         if user_message and conversation_context:
@@ -640,6 +643,7 @@ class UniversalSearchOrchestrator:
                     "iterations": 0,
                     "total_results": 0,
                     "complexity": RoutingComplexity.SIMPLE,
+                    "intent_trace": intent_trace,
                     "timing_ms": {},
                 },
             )
@@ -653,20 +657,33 @@ class UniversalSearchOrchestrator:
         errors: list[str] = []
         timing_ms: dict[str, float] = {}
 
-        # 2. Intent analysis: try capability-driven fast-path first, fall back to LLM
+        # 2. Intent analysis: deterministic modules first, then LLM fallback
         t0 = time.monotonic()
+        source_matches = self._router.score_sources_from_text(
+            query,
+            threshold=0.0,
+            top_n=5,
+        )
         fast_intent = self._router.infer_fast_path_intent(query)
-        if fast_intent is not None:
-            intent = fast_intent
+        deterministic = self._intent_analyzer.analyze(
+            query=query,
+            source_matches=source_matches,
+            fast_path_intent=fast_intent,
+        )
+        intent_trace = deterministic.trace()
+        if deterministic.should_use_deterministic:
+            intent = deterministic.intent
             timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
             logger.info(
-                "Intent (fast-path): hints=%s | temporal=%s",
+                "Intent (deterministic): hints=%s | temporal=%s | confidence=%.2f",
                 intent.get("source_hints"),
                 intent.get("temporal"),
+                deterministic.aggregate_confidence,
             )
         else:
             intent = await self._analyze_intent(context)
             timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
+            intent_trace["decision"] = "llm"
         logger.info(
             "Intent: %s | entities=%s | temporal=%s | hints=%s | complexity=%s | plan_steps=%s",
             intent.get("intent"),
@@ -725,6 +742,7 @@ class UniversalSearchOrchestrator:
                         "iterations": 0,
                         "total_results": 0,
                         "complexity": complexity_for_meta,
+                        "intent_trace": intent_trace,
                         "source_match_trace": [],
                         "timing_ms": timing_ms,
                     },
@@ -755,6 +773,7 @@ class UniversalSearchOrchestrator:
                         "iterations": 0,
                         "total_results": 0,
                         "complexity": routing_plan.complexity,
+                        "intent_trace": intent_trace,
                         "source_match_trace": source_match_trace,
                         "timing_ms": timing_ms,
                     },
@@ -863,6 +882,7 @@ class UniversalSearchOrchestrator:
             "iterations": iterations,
             "total_results": len(ranked),
             "complexity": complexity_for_meta,
+            "intent_trace": intent_trace,
             "source_match_trace": source_match_trace,
             "timing_ms": timing_ms,
         }

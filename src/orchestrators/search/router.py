@@ -67,6 +67,15 @@ class RetrievalRouter:
     def __init__(self, capabilities: CapabilityRegistry) -> None:
         self._capabilities = capabilities
 
+    def score_sources_from_text(
+        self,
+        text: str,
+        threshold: float = 0.0,
+        top_n: int | None = None,
+    ) -> list[SourceMatch]:
+        """Public source scoring API for deterministic intent modules."""
+        return self._match_sources_from_text(text, threshold=threshold, top_n=top_n)
+
     def infer_fast_path_intent(self, query: str) -> dict[str, Any] | None:
         """Build a lightweight intent when source hints are obvious from runtime capabilities."""
         text = (query or "").strip()
