@@ -295,24 +295,34 @@ class RetrievalRouter:
                     target.add(source)
         return target
 
-    def _build_source_aliases(self) -> dict[str, set[str]]:
-        aliases: dict[str, set[str]] = {}
+    def _build_source_aliases(self) -> dict[str, dict[str, float]]:
+        aliases: dict[str, dict[str, float]] = {}
         for source in self._capabilities.all_sources():
             caps = self._capabilities.get(source)
-            alias_set: set[str] = set()
-            alias_set.add(source.lower())
-            alias_set.add(source.lower().replace("_", " "))
+            alias_set: dict[str, float] = {}
+            source_norm = source.lower()
+            alias_set[source_norm] = 0.0
+            alias_set[source_norm.replace("_", " ")] = 0.0
             for token in _tokenize(source):
                 if len(token) >= 3:
-                    alias_set.add(token)
+                    alias_set[token] = 0.0
+            if caps and getattr(caps, "alias_hints", None):
+                for alias in caps.alias_hints:
+                    alias_norm = str(alias).lower().strip()
+                    if not alias_norm:
+                        continue
+                    alias_set[alias_norm] = max(alias_set.get(alias_norm, 0.0), 0.15)
+                    for token in _tokenize(alias_norm):
+                        if len(token) >= 2:
+                            alias_set[token] = max(alias_set.get(token, 0.0), 0.1)
             if caps and getattr(caps, "display_label", None):
                 label = str(caps.display_label).lower().strip()
                 if label:
-                    alias_set.add(label)
+                    alias_set[label] = max(alias_set.get(label, 0.0), 0.0)
                     for token in _tokenize(label):
                         if len(token) >= 3:
-                            alias_set.add(token)
-            aliases[source] = {a for a in alias_set if a}
+                            alias_set[token] = max(alias_set.get(token, 0.0), 0.0)
+            aliases[source] = {a: w for a, w in alias_set.items() if a}
         return aliases
 
     def _match_sources_from_text(
@@ -333,7 +343,7 @@ class RetrievalRouter:
             reasons: list[str] = []
             first_pos: int | None = None
 
-            for alias in source_aliases:
+            for alias, alias_bonus in source_aliases.items():
                 if not alias:
                     continue
                 alias_norm = alias.lower().strip()
@@ -352,18 +362,19 @@ class RetrievalRouter:
                         found = True
 
                 if found:
-                    phrase_bonus = 0.35
+                    phrase_bonus = 0.35 + alias_bonus
                     score += phrase_bonus
                     if " " in alias_norm:
-                        reasons.append(f"phrase_match:{alias_norm}")
+                        reasons.append(f"phrase_match:{alias_norm}:{phrase_bonus:.2f}")
                     else:
-                        reasons.append(f"token_match:{alias_norm}")
+                        reasons.append(f"token_match:{alias_norm}:{phrase_bonus:.2f}")
                     if first_pos is None or pos < first_pos:
                         first_pos = pos
 
                 if text_norm == alias_norm:
-                    score += 0.5
-                    reasons.append(f"exact_alias:{alias_norm}")
+                    exact_bonus = 0.5 + alias_bonus
+                    score += exact_bonus
+                    reasons.append(f"exact_alias:{alias_norm}:{exact_bonus:.2f}")
 
                 neg_pattern = (
                     rf"\b(?:not|without|except|excluding|instead of)\s+"
@@ -424,7 +435,7 @@ class RetrievalRouter:
         aliases = self._build_source_aliases()
         positions: dict[str, int] = {}
         for source in candidate_sources:
-            source_aliases = aliases.get(source, set())
+            source_aliases = aliases.get(source, {})
             best_pos: int | None = None
             for alias in source_aliases:
                 if not alias:

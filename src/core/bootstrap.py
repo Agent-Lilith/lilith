@@ -1,10 +1,9 @@
 """Tool registration, MCP wiring, and capability discovery at startup."""
 
 from src.contracts.mcp_search_v1 import (
+    CapabilityTier,
     FilterSpec,
-    RetrievalMethod,
     SearchCapabilities,
-    SourceClass,
 )
 from src.core.config import config
 from src.core.logger import logger
@@ -84,6 +83,9 @@ def _register_direct_backend_capabilities(
             max_limit=50,
             default_limit=10,
             display_label=_DIRECT_BACKEND_DISPLAY_LABELS.get(source_name),
+            latency_tier=CapabilityTier.MEDIUM,
+            quality_tier=CapabilityTier.MEDIUM,
+            cost_tier=CapabilityTier.MEDIUM,
         )
         registry.register(caps)
 
@@ -129,37 +131,8 @@ async def setup_tools() -> ToolRegistry:
             capabilities,
         )
         if not email_sources:
-            # Fallback: register known capabilities
-            email_sources = ["email"]
-            capabilities.register(
-                SearchCapabilities(
-                    source_name="email",
-                    source_class=SourceClass.PERSONAL,
-                    display_label="Email",
-                    supported_methods=[
-                        RetrievalMethod.STRUCTURED,
-                        RetrievalMethod.FULLTEXT,
-                        RetrievalMethod.VECTOR,
-                    ],
-                    supported_filters=[
-                        FilterSpec(
-                            name="from_email",
-                            type="string",
-                            operators=["contains"],
-                        ),
-                        FilterSpec(
-                            name="from_name",
-                            type="string",
-                            operators=["contains"],
-                        ),
-                        FilterSpec(name="date_after", type="date", operators=["gte"]),
-                        FilterSpec(name="date_before", type="date", operators=["lte"]),
-                        FilterSpec(name="labels", type="string[]", operators=["in"]),
-                        FilterSpec(
-                            name="has_attachments", type="boolean", operators=["eq"]
-                        ),
-                    ],
-                )
+            raise RuntimeError(
+                "MCP email capability discovery failed; refusing to start with hidden fallback."
             )
 
         dispatcher.register_mcp("email", email_sources, mcp_email_call)
@@ -187,43 +160,8 @@ async def setup_tools() -> ToolRegistry:
             capabilities,
         )
         if not browser_sources:
-            # Fallback
-            browser_sources = ["browser_history", "browser_bookmarks"]
-            capabilities.register(
-                SearchCapabilities(
-                    source_name="browser_history",
-                    source_class=SourceClass.PERSONAL,
-                    display_label="Browser history",
-                    supported_methods=[
-                        RetrievalMethod.STRUCTURED,
-                        RetrievalMethod.FULLTEXT,
-                        RetrievalMethod.VECTOR,
-                    ],
-                    supported_filters=[
-                        FilterSpec(name="date_after", type="date", operators=["gte"]),
-                        FilterSpec(name="date_before", type="date", operators=["lte"]),
-                        FilterSpec(
-                            name="domain", type="string", operators=["contains"]
-                        ),
-                    ],
-                )
-            )
-            capabilities.register(
-                SearchCapabilities(
-                    source_name="browser_bookmarks",
-                    source_class=SourceClass.PERSONAL,
-                    display_label="Browser bookmarks",
-                    supported_methods=[
-                        RetrievalMethod.STRUCTURED,
-                        RetrievalMethod.FULLTEXT,
-                        RetrievalMethod.VECTOR,
-                    ],
-                    supported_filters=[
-                        FilterSpec(
-                            name="folder", type="string", operators=["contains"]
-                        ),
-                    ],
-                )
+            raise RuntimeError(
+                "MCP browser capability discovery failed; refusing to start with hidden fallback."
             )
 
         dispatcher.register_mcp("browser", browser_sources, mcp_browser_call)
@@ -249,25 +187,9 @@ async def setup_tools() -> ToolRegistry:
             capabilities,
         )
         if not whatsapp_sources:
-            capabilities.register(
-                SearchCapabilities(
-                    source_name="whatsapp",
-                    source_class=SourceClass.PERSONAL,
-                    display_label="WhatsApp messages",
-                    supported_methods=[
-                        RetrievalMethod.STRUCTURED,
-                        RetrievalMethod.FULLTEXT,
-                        RetrievalMethod.VECTOR,
-                    ],
-                    supported_filters=[
-                        FilterSpec(name="chat_id", type="integer", operators=["eq"]),
-                        FilterSpec(name="from_me", type="boolean", operators=["eq"]),
-                        FilterSpec(name="date_after", type="date", operators=["gte"]),
-                        FilterSpec(name="date_before", type="date", operators=["lte"]),
-                    ],
-                )
+            raise RuntimeError(
+                "MCP WhatsApp capability discovery failed; refusing to start with hidden fallback."
             )
-            whatsapp_sources = ["whatsapp"]
 
         dispatcher.register_mcp("whatsapp", whatsapp_sources, mcp_whatsapp_call)
         logger.info("WhatsApp MCP registered: sources=%s", whatsapp_sources)

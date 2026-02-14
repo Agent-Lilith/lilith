@@ -8,7 +8,7 @@ Defines the canonical types for:
 MCP servers implement search_capabilities() and unified_search().
 The agent reads capabilities at bootstrap and routes queries accordingly.
 
-Contract v1.1: Added mode (search|count|aggregate), sort, group_by.
+Contract v1.2: Added capability intelligence hints (aliases, freshness, tiers).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Retrieval methods
@@ -58,6 +58,12 @@ class SourceClass(StrEnum):
     WEB = "web"
 
 
+class CapabilityTier(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 # ---------------------------------------------------------------------------
 # Capability discovery
 # ---------------------------------------------------------------------------
@@ -79,7 +85,7 @@ class FilterSpec(BaseModel):
 class SearchCapabilities(BaseModel):
     """Returned by each MCP server's search_capabilities tool."""
 
-    schema_version: str = Field(default="1.0")
+    schema_version: str = Field(default="1.2")
     source_name: str = Field(
         description="Canonical source identifier, e.g. 'email', 'browser_history'"
     )
@@ -104,6 +110,39 @@ class SearchCapabilities(BaseModel):
         default=None,
         description="Short user-facing label for the agent, e.g. 'WhatsApp messages'. If absent, a fallback is derived from source_name.",
     )
+    alias_hints: list[str] = Field(
+        default_factory=list,
+        description="Optional source aliases/synonyms used for source matching (e.g. ['wa', 'gmail']).",
+    )
+    freshness_window_days: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional freshness hint for this source; lower values imply faster staleness.",
+    )
+    latency_tier: CapabilityTier = Field(
+        description="Expected latency profile for planning/routing: low|medium|high."
+    )
+    quality_tier: CapabilityTier = Field(
+        description="Expected answer quality profile for planning/routing: low|medium|high."
+    )
+    cost_tier: CapabilityTier = Field(
+        description="Expected compute/usage cost profile for planning/routing: low|medium|high."
+    )
+
+    @field_validator("alias_hints")
+    @classmethod
+    def _validate_alias_hints(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            alias = str(raw).strip().lower()
+            if not alias:
+                raise ValueError("alias_hints must not contain empty values")
+            if alias in seen:
+                continue
+            seen.add(alias)
+            normalized.append(alias)
+        return normalized
 
 
 # ---------------------------------------------------------------------------

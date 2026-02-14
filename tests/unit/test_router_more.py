@@ -4,7 +4,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from src.contracts.mcp_search_v1 import FilterSpec, SearchCapabilities, SourceClass
+from src.contracts.mcp_search_v1 import (
+    CapabilityTier,
+    FilterSpec,
+    SearchCapabilities,
+    SourceClass,
+)
 from src.orchestrators.search.router import RetrievalRouter
 
 
@@ -24,6 +29,10 @@ class TestRouterLogic:
                     source_name="email",
                     source_class=SourceClass.PERSONAL,
                     supported_methods=["structured", "fulltext"],
+                    alias_hints=["gmail", "inbox"],
+                    latency_tier=CapabilityTier.MEDIUM,
+                    quality_tier=CapabilityTier.HIGH,
+                    cost_tier=CapabilityTier.MEDIUM,
                     supported_filters=[
                         FilterSpec(
                             name="from_email", type="string", operators=["contains"]
@@ -38,6 +47,10 @@ class TestRouterLogic:
                     source_name="calendar",
                     source_class=SourceClass.PERSONAL,
                     supported_methods=["structured"],
+                    alias_hints=["gcal"],
+                    latency_tier=CapabilityTier.LOW,
+                    quality_tier=CapabilityTier.HIGH,
+                    cost_tier=CapabilityTier.LOW,
                     supported_filters=[
                         FilterSpec(name="date_after", type="date", operators=["gte"])
                     ],
@@ -47,6 +60,10 @@ class TestRouterLogic:
                     source_name="web",
                     source_class=SourceClass.WEB,
                     supported_methods=["vector"],
+                    alias_hints=["internet"],
+                    latency_tier=CapabilityTier.HIGH,
+                    quality_tier=CapabilityTier.MEDIUM,
+                    cost_tier=CapabilityTier.HIGH,
                     supported_filters=[],
                 )
             return None
@@ -170,6 +187,15 @@ class TestRouterLogic:
         sources = {m.source for m in matches}
         assert "web" in sources
         assert "email" not in sources
+
+    def test_alias_hints_prioritized_for_source_matching(self, router):
+        matches = router._match_sources_from_text(
+            "Find that gmail thread from Alice",
+            threshold=0.3,
+            top_n=1,
+        )
+        assert matches
+        assert matches[0].source == "email"
 
     def test_fast_path_intent_builds_generic_multihop_plan(self, router):
         intent = router.infer_fast_path_intent(
