@@ -24,7 +24,9 @@ from src.llm.vllm_client import create_client
 from src.observability import traceable
 from src.orchestrators.search.capabilities import CapabilityRegistry
 from src.orchestrators.search.constants import (
+    REFINEMENT_ACTIONS,
     IntentComplexity,
+    RefinementActionKind,
     RefinementReason,
     RoutingComplexity,
 )
@@ -385,88 +387,122 @@ class UniversalSearchOrchestrator:
         previous_decisions: list[RoutingDecision],
         reason: RefinementReason,
     ) -> list[RoutingDecision]:
-        """Generate refinement decisions. Uses deterministic adjustments + optional LLM."""
-        refined: list[RoutingDecision] = []
+        """Generate refinement decisions from typed reason->action policy."""
+        del context, intent  # reserved for future LLM-assisted refinement policy
+        policy = REFINEMENT_ACTIONS.get(reason)
+        if policy is None:
+            raise ValueError(f"Refinement policy missing for reason: {reason}")
 
-        if reason == RefinementReason.NO_RESULTS:
-            # Broaden: retry all sources with vector + structured search and no filters
-            for d in previous_decisions:
-                # Include structured to get latest items even if query doesn't match semantically
-                methods = ["vector"]
-                if self._capabilities.can_handle(d.source, "structured"):
-                    methods.append("structured")
+        action_table = {
+            RefinementActionKind.BROADEN_RETRY_ALL: self._build_refine_broaden_retry_all,
+            RefinementActionKind.RETRY_MISSING_SOURCES: self._build_refine_retry_missing_sources,
+            RefinementActionKind.DIVERSIFY_METHODS: self._build_refine_diversify_methods,
+            RefinementActionKind.BACKFILL_SINGLE_SOURCE: self._build_refine_backfill_single_source,
+        }
+        action = action_table.get(policy.kind)
+        if action is None:
+            raise ValueError(f"Unsupported refinement action kind: {policy.kind}")
 
-                refined.append(
-                    RoutingDecision(
-                        source=d.source,
-                        methods=methods,
-                        query=d.query,
-                        filters=[],  # drop all filters
-                    )
-                )
-
-        elif reason == RefinementReason.LOW_SOURCE_COVERAGE:
-            # Retry missing sources
-            actual_sources = {r.source for r in results}
-            for d in previous_decisions:
-                if d.source not in actual_sources:
-                    refined.append(
-                        RoutingDecision(
-                            source=d.source,
-                            methods=d.methods,
-                            query=d.query,
-                            filters=[],  # relax filters
-                        )
-                    )
-
-        elif reason == RefinementReason.LOW_CONFIDENCE:
-            # Try different methods
-            for d in previous_decisions:
-                new_methods = []
-                if "fulltext" not in d.methods and self._capabilities.can_handle(
-                    d.source, "fulltext"
-                ):
-                    new_methods.append("fulltext")
-                if "vector" not in d.methods and self._capabilities.can_handle(
-                    d.source, "vector"
-                ):
-                    new_methods.append("vector")
-                if new_methods:
-                    refined.append(
-                        RoutingDecision(
-                            source=d.source,
-                            methods=new_methods,
-                            query=d.query,
-                            filters=d.filters,
-                        )
-                    )
-
-        elif reason == RefinementReason.SINGLE_SOURCE:
-            # Retry sources that were in the plan but returned no results (same query/filters)
-            actual_sources = {r.source for r in results}
-            for d in previous_decisions:
-                if d.source not in actual_sources:
-                    refined.append(
-                        RoutingDecision(
-                            source=d.source,
-                            methods=d.methods,
-                            query=d.query,
-                            filters=d.filters,
-                        )
-                    )
-
+        refined = action(results, previous_decisions)
         re_query_sources = [d.source for d in refined]
         logger.info(
-            "Refinement (reason=%s): %s additional decisions",
+            "Refinement (reason=%s action=%s): %s additional decisions",
             reason,
+            policy.kind,
             len(refined),
         )
         logger.debug(
-            "Refinement: reason=%s re_query_sources=%s",
+            "Refinement: reason=%s action=%s re_query_sources=%s",
             reason,
+            policy.kind,
             re_query_sources,
         )
-        return refined[:4]  # Cap at 4 refinement steps
+        return refined[: policy.max_decisions]
+
+    def _build_refine_broaden_retry_all(
+        self,
+        _: list[SearchResultV1],
+        previous_decisions: list[RoutingDecision],
+    ) -> list[RoutingDecision]:
+        refined: list[RoutingDecision] = []
+        for d in previous_decisions:
+            methods = ["vector"]
+            if self._capabilities.can_handle(d.source, "structured"):
+                methods.append("structured")
+            refined.append(
+                RoutingDecision(
+                    source=d.source,
+                    methods=methods,
+                    query=d.query,
+                    filters=[],
+                )
+            )
+        return refined
+
+    def _build_refine_retry_missing_sources(
+        self,
+        results: list[SearchResultV1],
+        previous_decisions: list[RoutingDecision],
+    ) -> list[RoutingDecision]:
+        refined: list[RoutingDecision] = []
+        actual_sources = {r.source for r in results}
+        for d in previous_decisions:
+            if d.source not in actual_sources:
+                refined.append(
+                    RoutingDecision(
+                        source=d.source,
+                        methods=d.methods,
+                        query=d.query,
+                        filters=[],
+                    )
+                )
+        return refined
+
+    def _build_refine_diversify_methods(
+        self,
+        _: list[SearchResultV1],
+        previous_decisions: list[RoutingDecision],
+    ) -> list[RoutingDecision]:
+        refined: list[RoutingDecision] = []
+        for d in previous_decisions:
+            new_methods = []
+            if "fulltext" not in d.methods and self._capabilities.can_handle(
+                d.source, "fulltext"
+            ):
+                new_methods.append("fulltext")
+            if "vector" not in d.methods and self._capabilities.can_handle(
+                d.source, "vector"
+            ):
+                new_methods.append("vector")
+            if new_methods:
+                refined.append(
+                    RoutingDecision(
+                        source=d.source,
+                        methods=new_methods,
+                        query=d.query,
+                        filters=d.filters,
+                    )
+                )
+        return refined
+
+    def _build_refine_backfill_single_source(
+        self,
+        results: list[SearchResultV1],
+        previous_decisions: list[RoutingDecision],
+    ) -> list[RoutingDecision]:
+        refined: list[RoutingDecision] = []
+        actual_sources = {r.source for r in results}
+        for d in previous_decisions:
+            if d.source not in actual_sources:
+                refined.append(
+                    RoutingDecision(
+                        source=d.source,
+                        methods=d.methods,
+                        query=d.query,
+                        filters=d.filters,
+                    )
+                )
+        return refined
 
     @traceable(name="search_multihop", run_type="chain")
     async def _run_multihop(
@@ -644,6 +680,7 @@ class UniversalSearchOrchestrator:
                     "total_results": 0,
                     "complexity": RoutingComplexity.SIMPLE,
                     "intent_trace": intent_trace,
+                    "refinement_trace": [],
                     "timing_ms": {},
                 },
             )
@@ -744,6 +781,7 @@ class UniversalSearchOrchestrator:
                         "complexity": complexity_for_meta,
                         "intent_trace": intent_trace,
                         "source_match_trace": [],
+                        "refinement_trace": [],
                         "timing_ms": timing_ms,
                     },
                 )
@@ -775,6 +813,7 @@ class UniversalSearchOrchestrator:
                         "complexity": routing_plan.complexity,
                         "intent_trace": intent_trace,
                         "source_match_trace": source_match_trace,
+                        "refinement_trace": [],
                         "timing_ms": timing_ms,
                     },
                 )
@@ -813,20 +852,50 @@ class UniversalSearchOrchestrator:
 
         # 7. Refinement loop
         iterations = 1
+        refinement_trace: list[dict[str, Any]] = []
+        reason_counts: dict[RefinementReason, int] = {}
         if do_refinement and not skip_refinement:
-            for _ in range(self._max_refinement_rounds):
+            for refinement_round in range(1, self._max_refinement_rounds + 1):
                 should_refine, reason = self._should_refine(
                     all_results,
                     intent,
                     decisions_for_run,
                 )
+                trace_entry: dict[str, Any] = {
+                    "round": refinement_round,
+                    "triggered": should_refine,
+                    "reason": str(reason) if reason is not None else None,
+                }
                 if not should_refine:
                     # Note when we have explicit filters with no results
                     if not all_results:
                         has_filters = any(d.filters for d in decisions_for_run)
                         if has_filters:
                             notes.append("No data found for the requested criteria.")
+                    refinement_trace.append(trace_entry)
                     break
+                if reason is None:
+                    raise ValueError(
+                        "Refinement trigger returned no reason while should_refine=True"
+                    )
+                policy = REFINEMENT_ACTIONS.get(reason)
+                if policy is None:
+                    raise ValueError(f"Refinement policy missing for reason: {reason}")
+                reason_count = reason_counts.get(reason, 0)
+                trace_entry["action"] = str(policy.kind)
+                trace_entry["reason_count_before"] = reason_count
+                trace_entry["max_triggers"] = policy.max_triggers_per_search
+                if reason_count >= policy.max_triggers_per_search:
+                    trace_entry["circuit_breaker_open"] = True
+                    refinement_trace.append(trace_entry)
+                    logger.info(
+                        "Refinement stopped by circuit breaker: reason=%s count=%s max=%s",
+                        reason,
+                        reason_count,
+                        policy.max_triggers_per_search,
+                    )
+                    break
+                reason_counts[reason] = reason_count + 1
 
                 iterations += 1
                 t0 = time.monotonic()
@@ -837,7 +906,10 @@ class UniversalSearchOrchestrator:
                     decisions_for_run,
                     reason,
                 )
+                trace_entry["circuit_breaker_open"] = False
+                trace_entry["decisions_generated"] = len(refined_decisions)
                 if not refined_decisions:
+                    refinement_trace.append(trace_entry)
                     break
 
                 (
@@ -851,6 +923,9 @@ class UniversalSearchOrchestrator:
                 all_results.extend(refined_results)
                 errors.extend(refined_errors)
                 timing_ms["refinement"] = round((time.monotonic() - t0) * 1000, 1)
+                trace_entry["results_added"] = len(refined_results)
+                trace_entry["errors_added"] = len(refined_errors)
+                refinement_trace.append(trace_entry)
 
         # 8. Fusion ranking
         t0 = time.monotonic()
@@ -884,6 +959,7 @@ class UniversalSearchOrchestrator:
             "complexity": complexity_for_meta,
             "intent_trace": intent_trace,
             "source_match_trace": source_match_trace,
+            "refinement_trace": refinement_trace,
             "timing_ms": timing_ms,
         }
         if count is not None:
