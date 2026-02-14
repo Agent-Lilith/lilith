@@ -27,11 +27,19 @@ class ExtractedEntity:
         out: list[dict[str, Any]] = []
         if self.from_name and self.from_name.strip():
             out.append(
-                {"field": "from_name", "operator": "contains", "value": self.from_name.strip()}
+                {
+                    "field": "from_name",
+                    "operator": "contains",
+                    "value": self.from_name.strip(),
+                }
             )
         if self.from_email and self.from_email.strip():
             out.append(
-                {"field": "from_email", "operator": "contains", "value": self.from_email.strip()}
+                {
+                    "field": "from_email",
+                    "operator": "contains",
+                    "value": self.from_email.strip(),
+                }
             )
         return out
 
@@ -70,7 +78,9 @@ def extract_from_metadata(results: list[SearchResultV1]) -> ExtractedEntity:
             name = meta.get("contact_push_name")
             if name and str(name).strip():
                 entity.from_name = str(name).strip()
-                logger.debug("Entity from whatsapp metadata: from_name=%s", entity.from_name)
+                logger.debug(
+                    "Entity from whatsapp metadata: from_name=%s", entity.from_name
+                )
                 return entity
         if r.source == "email":
             from_str = meta.get("from")
@@ -134,7 +144,7 @@ def _parse_llm_name(text: str) -> str | None:
     """Parse a single name from LLM output (strip quotes, newlines, markdown)."""
     if not text:
         return None
-    text = text.strip().strip('"\'')
+    text = text.strip().strip("\"'")
     if "\n" in text:
         text = text.split("\n")[0].strip()
     if not text or len(text) > 200:
@@ -150,10 +160,15 @@ def _parse_llm_entity(text: str) -> ExtractedEntity:
     """Parse LLM entity output: 'name (email)', 'name', or 'NONE'."""
     if not text:
         return ExtractedEntity()
-    text = text.strip().strip('"\'')
+    text = text.strip().strip("\"'")
     if "\n" in text:
         text = text.split("\n")[0].strip()
-    if not text or text.upper() == "NONE" or text.lower() == "unknown" or len(text) > 200:
+    if (
+        not text
+        or text.upper() == "NONE"
+        or text.lower() == "unknown"
+        or len(text) > 200
+    ):
         return ExtractedEntity()
     # Try "Name (email)" format
     m = _LLM_NAME_EMAIL_PATTERN.match(text)

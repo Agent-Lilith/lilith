@@ -33,7 +33,7 @@ class TestRouterFilters:
 
         mock_datetime.now.side_effect = now_side_effect
 
-        filters = router._extract_filters({"temporal": "yesterday"}, query="")
+        filters = router._extract_filters({"temporal": "yesterday"})
 
         # Expect date_after and date_before for 2024-01-01
         assert len(filters) == 2
@@ -52,7 +52,7 @@ class TestRouterFilters:
         fixed_now = datetime(2024, 1, 2, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
         mock_datetime.now.return_value = fixed_now
 
-        filters = router._extract_filters({"temporal": "today"}, query="")
+        filters = router._extract_filters({"temporal": "today"})
 
         # Expect date_after >= 2024-01-02
         assert len(filters) == 1

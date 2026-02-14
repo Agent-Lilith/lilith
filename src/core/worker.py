@@ -59,11 +59,12 @@ class Worker:
         instruction: str = "Format the result as a concise summary with bullet points.",
     ) -> str:
         template = self._get_template()
-        system_message = (
-            template.replace("{task_description}", task_description)
-            .replace("{instruction}", instruction)
+        system_message = template.replace(
+            "{task_description}", task_description
+        ).replace("{instruction}", instruction)
+        user_message = (
+            f"DATA TO PROCESS:\n---\n{data}\n---\n\nAction: {task_description}"
         )
-        user_message = f"DATA TO PROCESS:\n---\n{data}\n---\n\nAction: {task_description}"
 
         logger.debug(f"Worker task started: {task_description[:50]}...")
         client = current_llm_client.get() or self.client

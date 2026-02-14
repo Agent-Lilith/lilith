@@ -259,7 +259,9 @@ class LilithLogger:
                 "is_local": is_local,
                 "prompt_role": "main_agent",
                 "system_ref": "soul",
-                "conversation_tail": prompt[-_CONVERSATION_TAIL_CHARS:] if len(prompt) > _CONVERSATION_TAIL_CHARS else prompt,
+                "conversation_tail": prompt[-_CONVERSATION_TAIL_CHARS:]
+                if len(prompt) > _CONVERSATION_TAIL_CHARS
+                else prompt,
                 "prompt_length": len(prompt),
             }
         elif role in _DYNAMIC_PROMPT_ROLES:

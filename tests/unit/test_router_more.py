@@ -96,7 +96,9 @@ class TestRouterLogic:
     def test_filter_extraction_from_name_and_email(self, router):
         """When entity has both name and email, both filters are emitted."""
         intent = {
-            "entities": [{"role": "sender", "name": "Alice", "email": "alice@example.com"}],
+            "entities": [
+                {"role": "sender", "name": "Alice", "email": "alice@example.com"}
+            ],
             "complexity": "simple",
         }
         plan = router.route(intent, "Email from Alice")
@@ -137,12 +139,39 @@ class TestRouterLogic:
         plan = router.route(intent, "find file")
         assert plan.complexity == "simple"
 
-        # 2. Complex keywords
-        intent = {"complexity": "simple"}  # LLM said simple, but keyword overrides
-        plan = router.route(intent, "relationship between X and Y")
+        # 2. Multi-source hints imply complex
+        intent = {"complexity": "simple", "source_hints": ["email", "calendar"]}
+        plan = router.route(intent, "cross-source lookup")
         assert plan.complexity == "complex"
 
         # 3. Multi-hop explicit
         intent = {"complexity": "multi_hop"}
         plan = router.route(intent, "anything")
         assert plan.complexity == "complex"
+
+    def test_fast_path_intent_builds_generic_multihop_plan(self, router):
+        intent = router.infer_fast_path_intent(
+            "Find latest calendar items and latest email from that person"
+        )
+        assert intent is not None
+        assert intent["temporal"] == "latest"
+        assert intent["complexity"] == "multi_hop"
+        plan = intent["retrieval_plan"]
+        assert isinstance(plan, list)
+        assert len(plan) == 2
+        assert plan[0]["sources"] == ["calendar"]
+        assert plan[0]["entity_from_previous"] is False
+        assert plan[1]["sources"] == ["email"]
+        assert plan[1]["entity_from_previous"] is True
+
+    def test_fast_path_intent_keeps_independent_sources_without_entity_chain(
+        self, router
+    ):
+        intent = router.infer_fast_path_intent("Search web and email today for Python")
+        assert intent is not None
+        assert intent["temporal"] == "today"
+        plan = intent["retrieval_plan"]
+        assert isinstance(plan, list)
+        assert len(plan) == 2
+        assert plan[0]["entity_from_previous"] is False
+        assert plan[1]["entity_from_previous"] is False

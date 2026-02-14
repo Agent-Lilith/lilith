@@ -24,7 +24,11 @@ def _build_trace_from_events(
     """Read turn_N.jsonl and aggregate events into a trace tree. No API key needed."""
     path = session_dir / f"turn_{turn_n:03d}.jsonl"
     if not path.exists():
-        return {"session_id": session_id, "turn": turn_n, "error": "turn file not found"}
+        return {
+            "session_id": session_id,
+            "turn": turn_n,
+            "error": "turn file not found",
+        }
 
     events: list[dict[str, Any]] = []
     try:
@@ -38,7 +42,12 @@ def _build_trace_from_events(
         return {"session_id": session_id, "turn": turn_n, "error": str(e)}
 
     if not events:
-        return {"session_id": session_id, "turn": turn_n, "children": [], "error": "no events"}
+        return {
+            "session_id": session_id,
+            "turn": turn_n,
+            "children": [],
+            "error": "no events",
+        }
 
     user_message = ""
     response = ""
@@ -109,7 +118,11 @@ def _build_trace_from_events(
                     }
                     result_content = data.get("result_content")
                     if result_content is not None:
-                        outputs["result_content"] = result_content[:200] + "..." if len(result_content) > 200 else result_content
+                        outputs["result_content"] = (
+                            result_content[:200] + "..."
+                            if len(result_content) > 200
+                            else result_content
+                        )
                     c["outputs"] = outputs
                     c["duration_seconds"] = data.get("duration_seconds")
                     c["end_time"] = ts
@@ -249,9 +262,7 @@ class SessionRecorder:
         """Build trace from event stream and write turn_N_trace.json. No API key needed."""
         trace_path = session_dir / f"turn_{turn_n:03d}_trace.json"
         try:
-            trace_data = _build_trace_from_events(
-                session_dir, turn_n, self._session_id
-            )
+            trace_data = _build_trace_from_events(session_dir, turn_n, self._session_id)
         except Exception as e:
             logger.warning("Session recorder: trace build failed: %s", e)
             trace_data = {
@@ -282,12 +293,17 @@ def _clear_session_path(session_path: Path) -> None:
     try:
         for p in session_path.iterdir():
             if p.is_file() and (
-                (p.name.startswith("turn_") and (p.suffix == ".jsonl" or p.name.endswith("_trace.json")))
+                (
+                    p.name.startswith("turn_")
+                    and (p.suffix == ".jsonl" or p.name.endswith("_trace.json"))
+                )
                 or p.name == "session_meta.json"
             ):
                 p.unlink()
     except Exception as e:
-        logger.warning("Session recorder: could not clear session dir %s: %s", session_path, e)
+        logger.warning(
+            "Session recorder: could not clear session dir %s: %s", session_path, e
+        )
 
 
 # Singleton used by logger

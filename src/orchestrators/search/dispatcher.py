@@ -142,7 +142,11 @@ class MCPSearchDispatcher:
         self, result: dict[str, Any], source: str, mode: str = "search"
     ) -> DispatcherResult:
         """Parse MCP unified_search response into DispatcherResult."""
-        if not result.get("success", True) and "results" not in result and "count" not in result:
+        if (
+            not result.get("success", True)
+            and "results" not in result
+            and "count" not in result
+        ):
             error = result.get("error", "Unknown error")
             logger.warning("Dispatcher: search failed for '%s': %s", source, error)
             return DispatcherResult(source=source, mode=mode)

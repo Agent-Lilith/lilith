@@ -147,7 +147,9 @@ class UniversalSearchTool(Tool):
             max_val = 20
 
         try:
-            logger.tool_execute(self.name, {"user_message": user_message[:200], "max_results": max_val})
+            logger.tool_execute(
+                self.name, {"user_message": user_message[:200], "max_results": max_val}
+            )
             response: UniversalSearchResponse = await self._orchestrator.search(
                 conversation_context=(conversation_context or "").strip(),
                 user_message=(user_message or "").strip(),

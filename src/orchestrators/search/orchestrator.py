@@ -82,80 +82,6 @@ def _default_query_from_context(context: str) -> str:
     return first_line[:200] if first_line else ""
 
 
-_FAST_PATH_PATTERNS: list[tuple[re.Pattern, dict[str, Any]]] = [
-    # "my calendar today/tomorrow/this week"
-    (
-        re.compile(
-            r"\b(?:calendar|schedule|meetings?|events?)\b.*\b(today|tomorrow|this week|next week|next \d+ days)\b",
-            re.IGNORECASE,
-        ),
-        {"intent": "find_event", "source_hints": ["calendar"], "complexity": "simple"},
-    ),
-    # "today/tomorrow/this week" + "calendar/schedule/meetings"
-    (
-        re.compile(
-            r"\b(today|tomorrow|this week|next week)\b.*\b(?:calendar|schedule|meetings?|events?)\b",
-            re.IGNORECASE,
-        ),
-        {"intent": "find_event", "source_hints": ["calendar"], "complexity": "simple"},
-    ),
-    # "emails from <name>" (simple sender lookup)
-    (
-        re.compile(
-            r"\b(?:emails?|mail)\b.*\bfrom\s+(\w[\w\s]{0,30}?)(?:\s+(?:today|yesterday|this week|last week|this month|recently))?$",
-            re.IGNORECASE,
-        ),
-        {"intent": "find_information", "source_hints": ["email"], "complexity": "simple"},
-    ),
-    # "my tasks/todos"
-    (
-        re.compile(r"\b(?:my\s+)?(?:tasks?|todos?|to-do)\b", re.IGNORECASE),
-        {"intent": "check_status", "source_hints": ["tasks"], "complexity": "simple"},
-    ),
-]
-
-_FAST_PATH_TEMPORAL = re.compile(
-    r"\b(today|tomorrow|yesterday|this week|last week|this month|last month|recently|recent|latest)\b",
-    re.IGNORECASE,
-)
-
-_FAST_PATH_SENDER = re.compile(
-    r"\b(?:emails?|mail)\s+from\s+(\w[\w\s]{0,30})\b", re.IGNORECASE
-)
-
-
-def _try_fast_path_intent(query: str) -> dict[str, Any] | None:
-    """Try to build intent deterministically for common patterns. Returns None if ambiguous."""
-    if not query or len(query) > 200:
-        return None
-
-    query_stripped = query.strip()
-
-    for pattern, base_intent in _FAST_PATH_PATTERNS:
-        if pattern.search(query_stripped):
-            intent = {
-                "intent": base_intent["intent"],
-                "entities": [],
-                "temporal": None,
-                "source_hints": list(base_intent["source_hints"]),
-                "complexity": base_intent["complexity"],
-                "retrieval_plan": None,
-            }
-            # Extract temporal
-            temporal_match = _FAST_PATH_TEMPORAL.search(query_stripped)
-            if temporal_match:
-                intent["temporal"] = temporal_match.group(1).lower()
-            # Extract sender entity for email queries
-            sender_match = _FAST_PATH_SENDER.search(query_stripped)
-            if sender_match:
-                name = sender_match.group(1).strip()
-                if name:
-                    intent["entities"] = [{"name": name, "role": "sender"}]
-            return intent
-
-    return None
-
-
 class UniversalSearchOrchestrator:
     """Capability-driven search orchestrator with hybrid retrieval and weighted fusion."""
 
@@ -175,6 +101,43 @@ class UniversalSearchOrchestrator:
         self._prompt_intent = load_search_prompt("intent")
         self._prompt_plan = load_search_prompt("plan")
         self._prompt_refine = load_search_prompt("refine")
+
+    def _cap_broad_decisions(
+        self, decisions: list[RoutingDecision], max_sources: int = 3
+    ) -> list[RoutingDecision]:
+        """Cap broad default routing to control latency while still searching."""
+        if not decisions:
+            return []
+        personal = set(self._capabilities.personal_sources())
+        ordered = sorted(
+            decisions,
+            key=lambda d: (0 if d.source in personal else 1, d.source),
+        )
+        capped: list[RoutingDecision] = []
+        for d in ordered[: max(1, max_sources)]:
+            preferred_methods: list[str] = []
+            if "structured" in d.methods:
+                preferred_methods.append("structured")
+            if "fulltext" in d.methods:
+                preferred_methods.append("fulltext")
+            elif "vector" in d.methods:
+                preferred_methods.append("vector")
+            if not preferred_methods:
+                preferred_methods = d.methods[:2]
+            capped.append(
+                RoutingDecision(
+                    source=d.source,
+                    methods=preferred_methods or ["vector"],
+                    query=d.query,
+                    filters=d.filters,
+                    mode=d.mode,
+                    sort_field=d.sort_field,
+                    sort_order=d.sort_order,
+                    group_by=d.group_by,
+                    aggregate_top_n=d.aggregate_top_n,
+                )
+            )
+        return capped
 
     def _get_llm(self):
         client = current_llm_client.get()
@@ -359,7 +322,7 @@ class UniversalSearchOrchestrator:
 
         # Trigger 1: Too few results (low recall)
         if len(results) < 3:
-            return True, "low_coverage"
+            return True, "low_source_coverage"
 
         # Trigger 2: Low confidence scores (avg score < 0.7)
         # Note: SearchResultV1 stores dict of scores, we take the max score for that result
@@ -581,7 +544,11 @@ class UniversalSearchOrchestrator:
                         name = top.label or top.group_value
                         if name:
                             extra_filters = [
-                                {"field": "from_name", "operator": "contains", "value": name}
+                                {
+                                    "field": "from_name",
+                                    "operator": "contains",
+                                    "value": name,
+                                }
                             ]
                             logger.info(
                                 "Multihop: entity from aggregates -> from_name=%s",
@@ -661,17 +628,25 @@ class UniversalSearchOrchestrator:
             )
 
         # Use user_message directly as query when available; fall back to first-line extraction
-        query = user_message.strip()[:200] if user_message and user_message.strip() else _default_query_from_context(context)
+        query = (
+            user_message.strip()[:200]
+            if user_message and user_message.strip()
+            else _default_query_from_context(context)
+        )
         errors: list[str] = []
         timing_ms: dict[str, float] = {}
 
-        # 2. Intent analysis: try fast-path first, fall back to LLM
+        # 2. Intent analysis: try capability-driven fast-path first, fall back to LLM
         t0 = time.monotonic()
-        fast_intent = _try_fast_path_intent(query)
+        fast_intent = self._router.infer_fast_path_intent(query)
         if fast_intent is not None:
             intent = fast_intent
             timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
-            logger.info("Intent (fast-path): hints=%s | temporal=%s", intent.get("source_hints"), intent.get("temporal"))
+            logger.info(
+                "Intent (fast-path): hints=%s | temporal=%s",
+                intent.get("source_hints"),
+                intent.get("temporal"),
+            )
         else:
             intent = await self._analyze_intent(context)
             timing_ms["intent"] = round((time.monotonic() - t0) * 1000, 1)
@@ -691,6 +666,7 @@ class UniversalSearchOrchestrator:
         use_multihop = (
             intent.get("complexity") == "multi_hop" and validated_plan is not None
         )
+        broad_search_note: str | None = None
         if intent.get("complexity") == "multi_hop" and validated_plan is None:
             logger.info(
                 "Multihop plan missing or invalid, using single-step search",
@@ -754,20 +730,11 @@ class UniversalSearchOrchestrator:
                     },
                 )
 
+            decisions_for_run = routing_plan.decisions
             if getattr(routing_plan, "used_default_sources", False):
-                return UniversalSearchResponse(
-                    results=[],
-                    notes=["No personal data sources matched for this query."],
-                    errors=[],
-                    meta={
-                        "query": query,
-                        "sources_queried": [],
-                        "methods_used": [],
-                        "iterations": 0,
-                        "total_results": 0,
-                        "complexity": routing_plan.complexity,
-                        "timing_ms": timing_ms,
-                    },
+                decisions_for_run = self._cap_broad_decisions(routing_plan.decisions)
+                broad_search_note = (
+                    "No explicit source hint detected; ran capped broad search."
                 )
 
             t0 = time.monotonic()
@@ -778,24 +745,23 @@ class UniversalSearchOrchestrator:
                 aggregates,
                 count_source,
                 aggregates_source,
-            ) = await self._execute_routing(routing_plan.decisions)
+            ) = await self._execute_routing(decisions_for_run)
             timing_ms["execution"] = round((time.monotonic() - t0) * 1000, 1)
             errors.extend(exec_errors)
-            decisions_for_run = routing_plan.decisions
             complexity_for_meta = routing_plan.complexity
+        notes: list[str] = []
+        if broad_search_note:
+            notes.append(broad_search_note)
 
-        # 6. Determine if query is personal
-        is_personal = self._is_personal_query(intent)
+        # 6. Determine if query is personal based on routed sources
+        is_personal = self._is_personal_query(decisions_for_run)
 
         # 6b. Skip refinement for count/aggregate modes
-        first_mode = (
-            decisions_for_run[0].mode if decisions_for_run else "search"
-        )
+        first_mode = decisions_for_run[0].mode if decisions_for_run else "search"
         skip_refinement = first_mode in ("count", "aggregate")
 
         # 7. Refinement loop
         iterations = 1
-        notes: list[str] = []
         if do_refinement and not skip_refinement:
             for _ in range(self._max_refinement_rounds):
                 should_refine, reason = self._should_refine(
@@ -884,29 +850,22 @@ class UniversalSearchOrchestrator:
             meta=meta,
         )
 
-    def _is_personal_query(self, intent: dict[str, Any]) -> bool:
-        """Determine if this is a personal data query (vs web/general knowledge)."""
-        hints = intent.get("source_hints") or []
-        hints_str = " ".join(str(h).lower() for h in hints)
-
-        # Explicitly web
-        if any(w in hints_str for w in ("web", "news", "search")):
-            return False
-
-        # Explicitly personal
-        if any(
-            w in hints_str
-            for w in (
-                "email",
-                "calendar",
-                "tasks",
-                "browser_history",
-                "browser_bookmarks",
-                "history",
-                "bookmark",
-            )
-        ):
+    def _is_personal_query(self, decisions: list[RoutingDecision]) -> bool:
+        """Determine query class from routed source capabilities."""
+        if not decisions:
             return True
-
-        # Default: personal (assistant is primarily a personal data tool)
+        saw_web = False
+        saw_personal = False
+        for d in decisions:
+            caps = self._capabilities.get(d.source)
+            if not caps:
+                continue
+            if str(caps.source_class) == "web":
+                saw_web = True
+            else:
+                saw_personal = True
+        if saw_personal:
+            return True
+        if saw_web:
+            return False
         return True
