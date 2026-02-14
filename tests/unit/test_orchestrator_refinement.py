@@ -125,6 +125,21 @@ class TestOrchestratorRefinement:
                 complexity="simple",
                 used_default_sources=False,
                 source_matches=[],
+                policy_controls={
+                    "latency_budget_tier": "low",
+                    "cost_budget_tier": "medium",
+                    "quality_preference_tier": "high",
+                    "freshness_demand_days": 1,
+                    "fanout_limit": 2,
+                    "reasons": ["strict_freshness_implies_low_latency"],
+                },
+                source_policy_trace=[
+                    {
+                        "source": "sourceA",
+                        "total_score": 0.77,
+                        "reasons": ["prioritized_quality_preference_fit"],
+                    }
+                ],
             )
         )
         orchestrator._execute_routing = MagicMock(
@@ -140,6 +155,8 @@ class TestOrchestratorRefinement:
         assert trace[0]["reason"] == RefinementReason.NO_RESULTS
         assert trace[0]["action"] == "broaden_retry_all"
         assert trace[0]["circuit_breaker_open"] is False
+        assert response.meta["routing_policy"]["fanout_limit"] == 2
+        assert response.meta["source_policy_trace"][0]["source"] == "sourceA"
 
     @pytest.mark.asyncio
     async def test_search_refinement_circuit_breaker(self, orchestrator):
@@ -167,6 +184,8 @@ class TestOrchestratorRefinement:
                 complexity="simple",
                 used_default_sources=False,
                 source_matches=[],
+                policy_controls={"fanout_limit": 2},
+                source_policy_trace=[],
             )
         )
         orchestrator._execute_routing = MagicMock(

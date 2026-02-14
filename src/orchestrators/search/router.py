@@ -43,6 +43,8 @@ class RoutingPlan:
     reasoning: str = ""
     used_default_sources: bool = False
     source_matches: list["SourceMatch"] = field(default_factory=list)
+    policy_controls: dict[str, Any] = field(default_factory=dict)
+    source_policy_trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -51,6 +53,20 @@ class SourceMatch:
 
     source: str
     confidence: float
+    reasons: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SourcePolicyScore:
+    """Capability-aware source score breakdown used for routing explainability."""
+
+    source: str
+    base_match_score: float
+    freshness_score: float
+    latency_score: float
+    cost_score: float
+    quality_score: float
+    total_score: float
     reasons: list[str] = field(default_factory=list)
 
 
@@ -63,6 +79,7 @@ class RetrievalRouter:
 
     _MATCH_THRESHOLD = 0.3
     _MATCH_TOP_N = 3
+    _TIER_RANK = {"low": 0, "medium": 1, "high": 2}
 
     def __init__(self, capabilities: CapabilityRegistry) -> None:
         self._capabilities = capabilities
@@ -111,12 +128,22 @@ class RetrievalRouter:
             "retrieval_plan": retrieval_plan,
         }
 
+    def build_policy_controls(
+        self, intent: dict[str, Any], query: str
+    ) -> dict[str, Any]:
+        """Public policy control builder for orchestrator metadata."""
+        return self._derive_policy_controls(intent=intent, query=query)
+
     def route(self, intent: dict[str, Any], query: str) -> RoutingPlan:
         """Build a routing plan from intent analysis and query text."""
         complexity = self._classify_complexity(intent)
-        target_sources, used_default_sources, source_matches = self._select_sources(
-            intent, query
-        )
+        (
+            target_sources,
+            used_default_sources,
+            source_matches,
+            policy_controls,
+            source_policy_trace,
+        ) = self._select_sources(intent, query)
         filters = self._extract_filters(intent)
         mode, group_by, aggregate_top_n = self._extract_mode_and_group_by(
             intent, target_sources
@@ -154,7 +181,46 @@ class RetrievalRouter:
             reasoning=reasoning,
             used_default_sources=used_default_sources,
             source_matches=source_matches,
+            policy_controls=policy_controls,
+            source_policy_trace=source_policy_trace,
         )
+
+    def prioritize_refinement_decisions(
+        self,
+        decisions: list[RoutingDecision],
+        intent: dict[str, Any],
+        reason: str | None = None,
+    ) -> tuple[list[RoutingDecision], dict[str, Any], list[dict[str, Any]]]:
+        """Apply capability-aware ranking/fanout prior to refinement execution."""
+        if not decisions:
+            return [], {}, []
+
+        unique_sources = list(dict.fromkeys(d.source for d in decisions))
+        query = decisions[0].query
+        policy = self._derive_policy_controls(
+            intent=intent,
+            query=query,
+            refinement_reason=reason,
+        )
+        source_scores = self._score_sources_with_policy(
+            sources=unique_sources,
+            source_match_confidence={},
+            policy_controls=policy,
+            default_base=0.2,
+        )
+        ordered_sources = [s.source for s in source_scores]
+        reordered = sorted(
+            decisions,
+            key=lambda d: (
+                ordered_sources.index(d.source)
+                if d.source in ordered_sources
+                else len(ordered_sources),
+                d.source,
+            ),
+        )
+        fanout = int(policy.get("fanout_limit", len(reordered)))
+        trimmed = reordered[: max(1, fanout)]
+        return trimmed, policy, [self._policy_score_to_trace(s) for s in source_scores]
 
     def decisions_for_sources(
         self,
@@ -243,16 +309,21 @@ class RetrievalRouter:
 
     def _select_sources(
         self, intent: dict[str, Any], query: str
-    ) -> tuple[list[str], bool, list[SourceMatch]]:
+    ) -> tuple[
+        list[str], bool, list[SourceMatch], dict[str, Any], list[dict[str, Any]]
+    ]:
         """Determine which sources to query.
 
         Returns: (sources, used_default_sources, source_matches)
         """
         available = set(self._capabilities.all_sources())
         if not available:
-            return [], False, []
+            return [], False, [], {}, []
 
         hints = intent.get("source_hints") or []
+        has_explicit_hints = bool(hints)
+        policy_controls = self._derive_policy_controls(intent=intent, query=query)
+        source_match_confidence: dict[str, float] = {}
         if hints:
             hint_text = " ".join(str(h or "") for h in hints)
             hint_matches = self._match_sources_from_text(
@@ -262,7 +333,21 @@ class RetrievalRouter:
             )
             hinted = [m.source for m in hint_matches]
             if hinted:
-                return hinted, False, hint_matches
+                source_match_confidence = {
+                    m.source: float(m.confidence) for m in hint_matches
+                }
+                ranked = self._score_sources_with_policy(
+                    sources=hinted,
+                    source_match_confidence=source_match_confidence,
+                    policy_controls=policy_controls,
+                )
+                selected, trace = self._select_ranked_sources(
+                    ranked_scores=ranked,
+                    policy_controls=policy_controls,
+                    has_explicit_hints=has_explicit_hints,
+                    intent=intent,
+                )
+                return selected, False, hint_matches, policy_controls, trace
 
         query_matches = self._match_sources_from_text(
             query,
@@ -271,11 +356,240 @@ class RetrievalRouter:
         )
         query_target = [m.source for m in query_matches]
         if query_target:
-            return query_target, False, query_matches
+            source_match_confidence = {
+                m.source: float(m.confidence) for m in query_matches
+            }
+            ranked = self._score_sources_with_policy(
+                sources=query_target,
+                source_match_confidence=source_match_confidence,
+                policy_controls=policy_controls,
+            )
+            selected, trace = self._select_ranked_sources(
+                ranked_scores=ranked,
+                policy_controls=policy_controls,
+                has_explicit_hints=has_explicit_hints,
+                intent=intent,
+            )
+            return selected, False, query_matches, policy_controls, trace
 
         personal = self._capabilities.personal_sources()
         sources = sorted(personal) if personal else sorted(available)
-        return sources, True, []
+        ranked = self._score_sources_with_policy(
+            sources=sources,
+            source_match_confidence={},
+            policy_controls=policy_controls,
+            default_base=0.15,
+        )
+        selected, trace = self._select_ranked_sources(
+            ranked_scores=ranked,
+            policy_controls=policy_controls,
+            has_explicit_hints=False,
+            intent=intent,
+        )
+        return selected, True, [], policy_controls, trace
+
+    def _select_ranked_sources(
+        self,
+        ranked_scores: list[SourcePolicyScore],
+        policy_controls: dict[str, Any],
+        has_explicit_hints: bool,
+        intent: dict[str, Any],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        selected = [s.source for s in ranked_scores]
+        fanout_limit = int(policy_controls.get("fanout_limit", len(selected)))
+        intent_complexity = self._classify_complexity(intent)
+        apply_fanout = not (
+            has_explicit_hints and intent_complexity == RoutingComplexity.COMPLEX
+        )
+        if apply_fanout:
+            selected = selected[: max(1, fanout_limit)]
+        return selected, [self._policy_score_to_trace(s) for s in ranked_scores]
+
+    def _policy_score_to_trace(self, score: SourcePolicyScore) -> dict[str, Any]:
+        return {
+            "source": score.source,
+            "base_match_score": round(score.base_match_score, 3),
+            "freshness_score": round(score.freshness_score, 3),
+            "latency_score": round(score.latency_score, 3),
+            "cost_score": round(score.cost_score, 3),
+            "quality_score": round(score.quality_score, 3),
+            "total_score": round(score.total_score, 3),
+            "reasons": score.reasons,
+        }
+
+    def _derive_policy_controls(
+        self,
+        intent: dict[str, Any],
+        query: str,
+        refinement_reason: str | None = None,
+    ) -> dict[str, Any]:
+        text = (query or "").lower()
+        temporal = str(intent.get("temporal") or "").strip().lower()
+        search_mode = str(intent.get("search_mode") or SearchMode.SEARCH)
+
+        freshness_demand_days: int | None = None
+        if temporal in {"today"}:
+            freshness_demand_days = 1
+        elif temporal in {"yesterday"}:
+            freshness_demand_days = 2
+        elif temporal in {"latest", "most recent", "recently"}:
+            freshness_demand_days = 7
+        elif temporal in {"recent"}:
+            freshness_demand_days = 14
+        elif temporal in {"this week"}:
+            freshness_demand_days = 7
+        elif temporal in {"last week"}:
+            freshness_demand_days = 14
+        elif temporal in {"this month"}:
+            freshness_demand_days = 30
+        elif temporal in {"last month"}:
+            freshness_demand_days = 60
+
+        latency_budget = "medium"
+        cost_budget = "medium"
+        quality_preference = "medium"
+        reasons: list[str] = []
+
+        if re.search(
+            r"\b(quick|quickly|fast|urgent|asap|immediately|right now)\b", text
+        ):
+            latency_budget = "low"
+            reasons.append("query_requests_low_latency")
+        if re.search(r"\b(cheap|inexpensive|low cost|budget|minimal cost)\b", text):
+            cost_budget = "low"
+            reasons.append("query_requests_low_cost")
+        if re.search(
+            r"\b(accurate|best|high quality|quality|comprehensive|thorough|detailed|reliable)\b",
+            text,
+        ):
+            quality_preference = "high"
+            reasons.append("query_requests_high_quality")
+        if search_mode in {SearchMode.COUNT, SearchMode.AGGREGATE}:
+            latency_budget = "low"
+            reasons.append("count_or_aggregate_prefers_low_latency")
+        if freshness_demand_days is not None and freshness_demand_days <= 2:
+            latency_budget = "low"
+            reasons.append("strict_freshness_implies_low_latency")
+        if refinement_reason == "low_confidence":
+            quality_preference = "high"
+            reasons.append("low_confidence_refinement_prioritizes_quality")
+
+        fanout_limit = 3
+        if latency_budget == "low" or cost_budget == "low":
+            fanout_limit = 2
+        if quality_preference == "high":
+            fanout_limit += 1
+        if freshness_demand_days is not None and freshness_demand_days <= 2:
+            fanout_limit = min(fanout_limit, 2)
+        fanout_limit = max(1, min(5, fanout_limit))
+
+        return {
+            "freshness_demand_days": freshness_demand_days,
+            "latency_budget_tier": latency_budget,
+            "cost_budget_tier": cost_budget,
+            "quality_preference_tier": quality_preference,
+            "fanout_limit": fanout_limit,
+            "search_mode": search_mode,
+            "refinement_reason": refinement_reason,
+            "reasons": reasons,
+        }
+
+    def _tier_rank(self, tier: Any, default: str = "medium") -> int:
+        value = str(tier or default).strip().lower()
+        return self._TIER_RANK.get(value, self._TIER_RANK[default])
+
+    def _score_sources_with_policy(
+        self,
+        sources: list[str],
+        source_match_confidence: dict[str, float],
+        policy_controls: dict[str, Any],
+        default_base: float = 0.0,
+    ) -> list[SourcePolicyScore]:
+        scored: list[SourcePolicyScore] = []
+        freshness_demand_days = policy_controls.get("freshness_demand_days")
+        latency_budget_tier = policy_controls.get("latency_budget_tier", "medium")
+        cost_budget_tier = policy_controls.get("cost_budget_tier", "medium")
+        quality_preference_tier = policy_controls.get(
+            "quality_preference_tier", "medium"
+        )
+
+        for source in sources:
+            caps = self._capabilities.get(source)
+            base = float(source_match_confidence.get(source, default_base))
+            reasons: list[str] = []
+
+            freshness_score = 0.0
+            if freshness_demand_days is not None:
+                source_freshness = (
+                    int(caps.freshness_window_days)
+                    if caps and caps.freshness_window_days is not None
+                    else None
+                )
+                if source_freshness is None:
+                    freshness_score = -0.12 if freshness_demand_days <= 7 else -0.05
+                    reasons.append("deprioritized_unknown_freshness")
+                elif source_freshness <= freshness_demand_days:
+                    freshness_score = 0.25
+                    reasons.append("prioritized_freshness_fit")
+                elif source_freshness <= freshness_demand_days * 2:
+                    freshness_score = 0.08
+                    reasons.append("marginal_freshness_fit")
+                else:
+                    freshness_score = -0.18
+                    reasons.append("deprioritized_stale_freshness_window")
+
+            latency_score = 0.0
+            cost_score = 0.0
+            quality_score = 0.0
+            if caps is not None:
+                latency_delta = self._tier_rank(caps.latency_tier) - self._tier_rank(
+                    latency_budget_tier
+                )
+                if latency_delta <= 0:
+                    latency_score = 0.18
+                    reasons.append("prioritized_latency_budget_fit")
+                else:
+                    latency_score = -0.12 * latency_delta
+                    reasons.append("deprioritized_latency_over_budget")
+
+                cost_delta = self._tier_rank(caps.cost_tier) - self._tier_rank(
+                    cost_budget_tier
+                )
+                if cost_delta <= 0:
+                    cost_score = 0.14
+                    reasons.append("prioritized_cost_budget_fit")
+                else:
+                    cost_score = -0.12 * cost_delta
+                    reasons.append("deprioritized_cost_over_budget")
+
+                quality_delta = self._tier_rank(caps.quality_tier) - self._tier_rank(
+                    quality_preference_tier
+                )
+                if quality_delta >= 0:
+                    quality_score = 0.22
+                    reasons.append("prioritized_quality_preference_fit")
+                else:
+                    quality_score = -0.14 * abs(quality_delta)
+                    reasons.append("deprioritized_quality_below_preference")
+            else:
+                reasons.append("unknown_capabilities")
+
+            total = base + freshness_score + latency_score + cost_score + quality_score
+            scored.append(
+                SourcePolicyScore(
+                    source=source,
+                    base_match_score=base,
+                    freshness_score=freshness_score,
+                    latency_score=latency_score,
+                    cost_score=cost_score,
+                    quality_score=quality_score,
+                    total_score=total,
+                    reasons=reasons[:6],
+                )
+            )
+
+        scored.sort(key=lambda s: (-s.total_score, -s.base_match_score, s.source))
+        return scored
 
     def _resolve_sources_from_hints(self, hints: list[Any]) -> set[str]:
         available = set(self._capabilities.all_sources())

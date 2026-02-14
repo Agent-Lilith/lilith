@@ -30,6 +30,7 @@ class TestRouterLogic:
                     source_class=SourceClass.PERSONAL,
                     supported_methods=["structured", "fulltext"],
                     alias_hints=["gmail", "inbox"],
+                    freshness_window_days=30,
                     latency_tier=CapabilityTier.MEDIUM,
                     quality_tier=CapabilityTier.HIGH,
                     cost_tier=CapabilityTier.MEDIUM,
@@ -48,6 +49,7 @@ class TestRouterLogic:
                     source_class=SourceClass.PERSONAL,
                     supported_methods=["structured"],
                     alias_hints=["gcal"],
+                    freshness_window_days=2,
                     latency_tier=CapabilityTier.LOW,
                     quality_tier=CapabilityTier.HIGH,
                     cost_tier=CapabilityTier.LOW,
@@ -61,6 +63,7 @@ class TestRouterLogic:
                     source_class=SourceClass.WEB,
                     supported_methods=["vector"],
                     alias_hints=["internet"],
+                    freshness_window_days=90,
                     latency_tier=CapabilityTier.HIGH,
                     quality_tier=CapabilityTier.MEDIUM,
                     cost_tier=CapabilityTier.HIGH,
@@ -223,3 +226,38 @@ class TestRouterLogic:
         assert len(plan) == 2
         assert plan[0]["entity_from_previous"] is False
         assert plan[1]["entity_from_previous"] is False
+
+    def test_capability_tiers_change_routing_order_and_fanout(self, router):
+        intent = {"source_hints": [], "complexity": "simple", "temporal": "today"}
+        plan = router.route(
+            intent,
+            "quick cheap reliable search across web email calendar today",
+        )
+        sources = [d.source for d in plan.decisions]
+
+        assert sources
+        assert sources[0] == "calendar"
+        assert len(sources) == 2
+        assert "web" not in sources
+
+        assert plan.policy_controls["latency_budget_tier"] == "low"
+        assert plan.policy_controls["cost_budget_tier"] == "low"
+        assert plan.policy_controls["quality_preference_tier"] == "high"
+        assert plan.policy_controls["freshness_demand_days"] == 1
+        assert plan.source_policy_trace
+        assert any(
+            "prioritized_freshness_fit" in entry["reasons"]
+            for entry in plan.source_policy_trace
+            if entry["source"] == "calendar"
+        )
+
+    def test_high_quality_preference_expands_fanout(self, router):
+        intent = {"source_hints": [], "complexity": "simple"}
+        plan = router.route(
+            intent,
+            "comprehensive detailed reliable search across web email calendar",
+        )
+        sources = [d.source for d in plan.decisions]
+        assert len(sources) == 3
+        assert "web" in sources
+        assert plan.policy_controls["quality_preference_tier"] == "high"

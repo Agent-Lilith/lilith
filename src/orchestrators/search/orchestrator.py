@@ -781,11 +781,17 @@ class UniversalSearchOrchestrator:
                         "complexity": complexity_for_meta,
                         "intent_trace": intent_trace,
                         "source_match_trace": [],
+                        "routing_policy": self._router.build_policy_controls(
+                            intent, query
+                        ),
+                        "source_policy_trace": [],
                         "refinement_trace": [],
                         "timing_ms": timing_ms,
                     },
                 )
             source_match_trace: list[dict[str, Any]] = []
+            routing_policy = self._router.build_policy_controls(intent, query)
+            source_policy_trace: list[dict[str, Any]] = []
         else:
             # 3. Single-step: route then execute (fallback when no valid retrieval_plan)
             t0 = time.monotonic()
@@ -798,6 +804,8 @@ class UniversalSearchOrchestrator:
                 }
                 for m in routing_plan.source_matches
             ]
+            routing_policy = getattr(routing_plan, "policy_controls", {}) or {}
+            source_policy_trace = getattr(routing_plan, "source_policy_trace", []) or []
             timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
 
             if not routing_plan.decisions:
@@ -813,6 +821,8 @@ class UniversalSearchOrchestrator:
                         "complexity": routing_plan.complexity,
                         "intent_trace": intent_trace,
                         "source_match_trace": source_match_trace,
+                        "routing_policy": routing_policy,
+                        "source_policy_trace": source_policy_trace,
                         "refinement_trace": [],
                         "timing_ms": timing_ms,
                     },
@@ -820,7 +830,11 @@ class UniversalSearchOrchestrator:
 
             decisions_for_run = routing_plan.decisions
             if getattr(routing_plan, "used_default_sources", False):
-                decisions_for_run = self._cap_broad_decisions(routing_plan.decisions)
+                fanout_cap = int(routing_policy.get("fanout_limit", 3) or 3)
+                decisions_for_run = self._cap_broad_decisions(
+                    routing_plan.decisions,
+                    max_sources=fanout_cap,
+                )
                 broad_search_note = (
                     "No explicit source hint detected; ran capped broad search."
                 )
@@ -906,8 +920,19 @@ class UniversalSearchOrchestrator:
                     decisions_for_run,
                     reason,
                 )
+                (
+                    refined_decisions,
+                    refine_policy_controls,
+                    refine_source_policy_trace,
+                ) = self._router.prioritize_refinement_decisions(
+                    refined_decisions,
+                    intent,
+                    reason=str(reason),
+                )
                 trace_entry["circuit_breaker_open"] = False
                 trace_entry["decisions_generated"] = len(refined_decisions)
+                trace_entry["policy_controls"] = refine_policy_controls
+                trace_entry["source_policy_trace"] = refine_source_policy_trace
                 if not refined_decisions:
                     refinement_trace.append(trace_entry)
                     break
@@ -959,6 +984,8 @@ class UniversalSearchOrchestrator:
             "complexity": complexity_for_meta,
             "intent_trace": intent_trace,
             "source_match_trace": source_match_trace,
+            "routing_policy": routing_policy,
+            "source_policy_trace": source_policy_trace,
             "refinement_trace": refinement_trace,
             "timing_ms": timing_ms,
         }
