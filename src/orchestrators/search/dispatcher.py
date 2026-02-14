@@ -11,7 +11,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.contracts.mcp_search_v1 import AggregateGroup, SearchResultV1, SourceClass
+from src.contracts.mcp_search_v1 import (
+    AggregateGroup,
+    SearchMode,
+    SearchResultV1,
+    SourceClass,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +28,7 @@ class DispatcherResult:
     results: list[SearchResultV1] = field(default_factory=list)
     count: int | None = None
     aggregates: list[AggregateGroup] = field(default_factory=list)
-    mode: str = "search"
+    mode: SearchMode = SearchMode.SEARCH
     source: str = ""
 
 
@@ -62,7 +67,7 @@ class MCPSearchDispatcher:
         methods: list[str] | None = None,
         filters: list[dict[str, Any]] | None = None,
         top_k: int = 10,
-        mode: str = "search",
+        mode: SearchMode = SearchMode.SEARCH,
         sort_field: str | None = None,
         sort_order: str = "desc",
         group_by: str | None = None,
@@ -78,7 +83,7 @@ class MCPSearchDispatcher:
             "query": query,
             "top_k": top_k,
             "include_scores": True,
-            "mode": mode,
+            "mode": str(mode),
             "aggregate_top_n": aggregate_top_n,
         }
         if methods:
@@ -88,7 +93,7 @@ class MCPSearchDispatcher:
         if sort_field:
             args["sort_field"] = sort_field
             args["sort_order"] = sort_order
-        if group_by and mode == "aggregate":
+        if group_by and mode == SearchMode.AGGREGATE:
             args["group_by"] = group_by
 
         # For browser server, route to the correct sub-source
@@ -139,7 +144,10 @@ class MCPSearchDispatcher:
             return {}
 
     def _parse_response(
-        self, result: dict[str, Any], source: str, mode: str = "search"
+        self,
+        result: dict[str, Any],
+        source: str,
+        mode: SearchMode = SearchMode.SEARCH,
     ) -> DispatcherResult:
         """Parse MCP unified_search response into DispatcherResult."""
         if (
@@ -163,7 +171,11 @@ class MCPSearchDispatcher:
         elif isinstance(output, dict):
             data = output
 
-        response_mode = data.get("mode", mode)
+        response_mode_raw = data.get("mode", str(mode))
+        try:
+            response_mode = SearchMode(str(response_mode_raw))
+        except ValueError:
+            response_mode = mode
         count = data.get("count")
         raw_aggregates = data.get("aggregates", [])
         aggregates: list[AggregateGroup] = []

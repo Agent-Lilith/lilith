@@ -7,7 +7,7 @@ registers the results here. Non-MCP backends register their capabilities directl
 import logging
 from typing import Any
 
-from src.contracts.mcp_search_v1 import SearchCapabilities, SourceClass
+from src.contracts.mcp_search_v1 import SearchCapabilities, SearchMode, SourceClass
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +105,8 @@ class CapabilityRegistry:
         caps = self._capabilities.get(source_name)
         if not caps:
             return False
-        modes = getattr(caps, "supported_modes", None) or ["search"]
-        return mode in modes
+        modes = getattr(caps, "supported_modes", None) or [SearchMode.SEARCH]
+        return str(mode) in [str(m) for m in modes]
 
     def supports_group_by(self, source_name: str, field: str) -> bool:
         caps = self._capabilities.get(source_name)

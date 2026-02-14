@@ -16,13 +16,18 @@ import re
 import time
 from typing import Any
 
-from src.contracts.mcp_search_v1 import AggregateGroup, SearchResultV1
+from src.contracts.mcp_search_v1 import AggregateGroup, SearchMode, SearchResultV1
 from src.core.logger import logger
 from src.core.prompts import load_search_prompt
 from src.core.worker import current_llm_client
 from src.llm.vllm_client import create_client
 from src.observability import traceable
 from src.orchestrators.search.capabilities import CapabilityRegistry
+from src.orchestrators.search.constants import (
+    IntentComplexity,
+    RefinementReason,
+    RoutingComplexity,
+)
 from src.orchestrators.search.dispatcher import DispatcherResult, MCPSearchDispatcher
 from src.orchestrators.search.entity_extraction import extract_entity
 from src.orchestrators.search.fusion import WeightedFusionRanker
@@ -80,6 +85,14 @@ def _default_query_from_context(context: str) -> str:
             first_line = first_line[len(prefix) :].strip()
             break
     return first_line[:200] if first_line else ""
+
+
+def _intent_complexity(value: Any) -> IntentComplexity:
+    """Normalize arbitrary intent complexity payload to known enum values."""
+    try:
+        return IntentComplexity(str(value or IntentComplexity.SIMPLE).strip().lower())
+    except ValueError:
+        return IntentComplexity.SIMPLE
 
 
 class UniversalSearchOrchestrator:
@@ -177,7 +190,7 @@ class UniversalSearchOrchestrator:
                     "entities": [],
                     "temporal": None,
                     "source_hints": [],
-                    "complexity": "simple",
+                    "complexity": IntentComplexity.SIMPLE,
                     "retrieval_plan": None,
                 },
             )
@@ -294,13 +307,17 @@ class UniversalSearchOrchestrator:
                 dres = DispatcherResult(
                     results=results,
                     source=source,
-                    mode="search",
+                    mode=SearchMode.SEARCH,
                 )
                 return results, errors, dres
             except Exception as e:
                 errors.append(f"{source}: {e!s}")
                 logger.warning("Direct search failed for %s: %s", source, e)
-                return [], errors, DispatcherResult(source=source, mode="search")
+                return (
+                    [],
+                    errors,
+                    DispatcherResult(source=source, mode=SearchMode.SEARCH),
+                )
 
         errors.append(f"No handler for source '{source}'")
         return [], errors, DispatcherResult(source=source, mode=decision.mode)
@@ -310,19 +327,19 @@ class UniversalSearchOrchestrator:
         results: list[SearchResultV1],
         intent: dict[str, Any],
         routing_plan_decisions: list[RoutingDecision],
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, RefinementReason | None]:
         """Deterministic refinement triggers. Returns (should_refine, reason)."""
+        complexity = _intent_complexity(intent.get("complexity"))
         if not results:
             # Explicit filters + simple query = no refinement, just report empty.
             has_filters = any(d.filters for d in routing_plan_decisions)
-            complexity = intent.get("complexity", "simple")
-            if has_filters and complexity in ("simple", None):
-                return False, ""
-            return True, "no_results"
+            if has_filters and complexity == IntentComplexity.SIMPLE:
+                return False, None
+            return True, RefinementReason.NO_RESULTS
 
         # Trigger 1: Too few results (low recall)
         if len(results) < 3:
-            return True, "low_source_coverage"
+            return True, RefinementReason.LOW_SOURCE_COVERAGE
 
         # Trigger 2: Low confidence scores (avg score < 0.7)
         # Note: SearchResultV1 stores dict of scores, we take the max score for that result
@@ -334,7 +351,7 @@ class UniversalSearchOrchestrator:
                 scores.append(0.0)
         avg_score = sum(scores) / len(scores) if scores else 0.0
         if avg_score < 0.7:
-            return True, "low_confidence"
+            return True, RefinementReason.LOW_CONFIDENCE
 
         # Trigger 3: Only one source returned results (missing cross-source context)
         # Check if intent implies multiple sources (e.g. source_hints has >1 item)
@@ -344,18 +361,18 @@ class UniversalSearchOrchestrator:
             # Skip refinement when intent is multi_hop: missing source likely needs
             # entity from this step (e.g. "email from that person"); retrying with
             # the same query would just repeat 0 results.
-            if intent.get("complexity") == "multi_hop":
+            if complexity == IntentComplexity.MULTI_HOP:
                 logger.debug(
                     "Refinement skipped: single_source (intent is multi_hop, retry would use same query)"
                 )
-                return False, ""
-            return True, "single_source"
+                return False, None
+            return True, RefinementReason.SINGLE_SOURCE
 
         # Trigger 4: Results contradict each other (placeholder for now)
         # if self._detect_contradictions(results):
         #    return True, "contradiction"
 
-        return False, ""
+        return False, None
 
     @traceable(name="search_refinement", run_type="chain")
     async def _refine(
@@ -364,12 +381,12 @@ class UniversalSearchOrchestrator:
         intent: dict[str, Any],
         results: list[SearchResultV1],
         previous_decisions: list[RoutingDecision],
-        reason: str,
+        reason: RefinementReason,
     ) -> list[RoutingDecision]:
         """Generate refinement decisions. Uses deterministic adjustments + optional LLM."""
         refined: list[RoutingDecision] = []
 
-        if reason == "no_results":
+        if reason == RefinementReason.NO_RESULTS:
             # Broaden: retry all sources with vector + structured search and no filters
             for d in previous_decisions:
                 # Include structured to get latest items even if query doesn't match semantically
@@ -386,7 +403,7 @@ class UniversalSearchOrchestrator:
                     )
                 )
 
-        elif reason == "low_source_coverage":
+        elif reason == RefinementReason.LOW_SOURCE_COVERAGE:
             # Retry missing sources
             actual_sources = {r.source for r in results}
             for d in previous_decisions:
@@ -400,7 +417,7 @@ class UniversalSearchOrchestrator:
                         )
                     )
 
-        elif reason == "low_confidence":
+        elif reason == RefinementReason.LOW_CONFIDENCE:
             # Try different methods
             for d in previous_decisions:
                 new_methods = []
@@ -422,7 +439,7 @@ class UniversalSearchOrchestrator:
                         )
                     )
 
-        elif reason == "single_source":
+        elif reason == RefinementReason.SINGLE_SOURCE:
             # Retry sources that were in the plan but returned no results (same query/filters)
             actual_sources = {r.source for r in results}
             for d in previous_decisions:
@@ -622,7 +639,7 @@ class UniversalSearchOrchestrator:
                     "methods_used": [],
                     "iterations": 0,
                     "total_results": 0,
-                    "complexity": "simple",
+                    "complexity": RoutingComplexity.SIMPLE,
                     "timing_ms": {},
                 },
             )
@@ -663,11 +680,13 @@ class UniversalSearchOrchestrator:
         available_sources = set(self._capabilities.all_sources())
         plan = intent.get("retrieval_plan")
         validated_plan = _validate_retrieval_plan(plan, available_sources)
+        intent_complexity = _intent_complexity(intent.get("complexity"))
         use_multihop = (
-            intent.get("complexity") == "multi_hop" and validated_plan is not None
+            intent_complexity == IntentComplexity.MULTI_HOP
+            and validated_plan is not None
         )
         broad_search_note: str | None = None
-        if intent.get("complexity") == "multi_hop" and validated_plan is None:
+        if intent_complexity == IntentComplexity.MULTI_HOP and validated_plan is None:
             logger.info(
                 "Multihop plan missing or invalid, using single-step search",
             )
@@ -694,7 +713,7 @@ class UniversalSearchOrchestrator:
             timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
             timing_ms["execution"] = timing_ms["routing"]
             errors.extend(exec_errors)
-            complexity_for_meta = "complex"
+            complexity_for_meta = RoutingComplexity.COMPLEX
             if not decisions_for_run:
                 return UniversalSearchResponse(
                     results=[],
@@ -757,8 +776,10 @@ class UniversalSearchOrchestrator:
         is_personal = self._is_personal_query(decisions_for_run)
 
         # 6b. Skip refinement for count/aggregate modes
-        first_mode = decisions_for_run[0].mode if decisions_for_run else "search"
-        skip_refinement = first_mode in ("count", "aggregate")
+        first_mode = (
+            decisions_for_run[0].mode if decisions_for_run else SearchMode.SEARCH
+        )
+        skip_refinement = first_mode in (SearchMode.COUNT, SearchMode.AGGREGATE)
 
         # 7. Refinement loop
         iterations = 1

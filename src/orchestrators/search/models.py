@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.contracts.mcp_search_v1 import SearchResultV1
+from src.orchestrators.search.constants import RoutingComplexity
 
 
 class UniversalSearchResponse(BaseModel):
@@ -28,7 +29,7 @@ class UniversalSearchResponse(BaseModel):
             "methods_used": [],
             "iterations": 0,
             "total_results": 0,
-            "complexity": "simple",
+            "complexity": RoutingComplexity.SIMPLE,
             "timing_ms": {},
         },
         description="Pipeline metadata: query, sources, methods, iterations, timing",

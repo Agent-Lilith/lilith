@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.orchestrators.search.constants import RefinementReason
 from src.orchestrators.search.orchestrator import UniversalSearchOrchestrator
 from src.orchestrators.search.router import RoutingDecision
 
@@ -38,7 +39,7 @@ class TestOrchestratorRefinement:
         should_refine, reason = orchestrator._should_refine(results, intent, decisions)
 
         assert should_refine is False
-        assert reason == ""
+        assert reason is None
 
     def test_do_refine_no_filters_simple_query(self, orchestrator):
         """
@@ -59,7 +60,7 @@ class TestOrchestratorRefinement:
         should_refine, reason = orchestrator._should_refine(results, intent, decisions)
 
         assert should_refine is True
-        assert reason == "no_results"
+        assert reason == RefinementReason.NO_RESULTS
 
     def test_do_refine_explicit_filters_complex_query(self, orchestrator):
         """
@@ -82,4 +83,4 @@ class TestOrchestratorRefinement:
         should_refine, reason = orchestrator._should_refine(results, intent, decisions)
 
         assert should_refine is True
-        assert reason == "no_results"
+        assert reason == RefinementReason.NO_RESULTS

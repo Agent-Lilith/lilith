@@ -11,8 +11,10 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.contracts.mcp_search_v1 import SearchMode
 from src.core.config import config
 from src.orchestrators.search.capabilities import CapabilityRegistry
+from src.orchestrators.search.constants import IntentComplexity, RoutingComplexity
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,7 @@ class RoutingDecision:
     methods: list[str]
     query: str
     filters: list[dict[str, Any]] = field(default_factory=list)
-    mode: str = "search"  # search | count | aggregate
+    mode: SearchMode = SearchMode.SEARCH
     sort_field: str | None = None
     sort_order: str = "desc"
     group_by: str | None = None
@@ -37,7 +39,7 @@ class RoutingPlan:
     """Complete routing plan for a query."""
 
     decisions: list[RoutingDecision]
-    complexity: str  # "simple" or "complex"
+    complexity: RoutingComplexity
     reasoning: str = ""
     used_default_sources: bool = False
 
@@ -74,7 +76,11 @@ class RetrievalRouter:
             "entities": [],
             "temporal": temporal,
             "source_hints": ordered_hints,
-            "complexity": "multi_hop" if retrieval_plan else "simple",
+            "complexity": (
+                IntentComplexity.MULTI_HOP
+                if retrieval_plan
+                else IntentComplexity.SIMPLE
+            ),
             "retrieval_plan": retrieval_plan,
         }
 
@@ -160,13 +166,15 @@ class RetrievalRouter:
 
     def _extract_mode_and_group_by(
         self, intent: dict[str, Any], sources: list[str]
-    ) -> tuple[str, str | None, int]:
+    ) -> tuple[SearchMode, str | None, int]:
         """Extract search mode/group_by from intent, then validate against capabilities."""
-        mode = str(intent.get("search_mode") or "search").strip().lower()
-        if mode not in ("search", "count", "aggregate"):
-            mode = "search"
+        mode_raw = str(intent.get("search_mode") or SearchMode.SEARCH).strip().lower()
+        try:
+            mode = SearchMode(mode_raw)
+        except ValueError:
+            mode = SearchMode.SEARCH
 
-        if mode != "aggregate":
+        if mode != SearchMode.AGGREGATE:
             return mode, None, 10
 
         top_n = int(intent.get("aggregate_top_n", 10) or 10)
@@ -176,7 +184,7 @@ class RetrievalRouter:
         if requested_group_by:
             for src in sources:
                 if self._capabilities.supports_group_by(src, requested_group_by):
-                    return "aggregate", requested_group_by, top_n
+                    return SearchMode.AGGREGATE, requested_group_by, top_n
 
         for src in sources:
             caps = self._capabilities.get(src)
@@ -184,24 +192,24 @@ class RetrievalRouter:
                 continue
             fields = getattr(caps, "supported_group_by_fields", None) or []
             if fields:
-                return "aggregate", str(fields[0]), top_n
+                return SearchMode.AGGREGATE, str(fields[0]), top_n
 
-        return "search", None, 10
+        return SearchMode.SEARCH, None, 10
 
-    def _classify_complexity(self, intent: dict[str, Any]) -> str:
+    def _classify_complexity(self, intent: dict[str, Any]) -> RoutingComplexity:
         """Classify query as simple/complex using intent structure."""
-        if intent.get("complexity") == "multi_hop":
-            return "complex"
+        if intent.get("complexity") == IntentComplexity.MULTI_HOP:
+            return RoutingComplexity.COMPLEX
         plan = intent.get("retrieval_plan") or []
         if isinstance(plan, list) and len(plan) > 1:
-            return "complex"
+            return RoutingComplexity.COMPLEX
         hints = intent.get("source_hints") or []
         if len(hints) > 1:
-            return "complex"
+            return RoutingComplexity.COMPLEX
         entities = intent.get("entities") or []
         if len(entities) > 3:
-            return "complex"
-        return "simple"
+            return RoutingComplexity.COMPLEX
+        return RoutingComplexity.SIMPLE
 
     def _select_sources(
         self, intent: dict[str, Any], query: str

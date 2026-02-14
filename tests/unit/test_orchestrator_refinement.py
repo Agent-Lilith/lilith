@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.contracts.mcp_search_v1 import RetrievalMethod, SearchResultV1
+from src.orchestrators.search.constants import RefinementReason
 from src.orchestrators.search.orchestrator import UniversalSearchOrchestrator
 from src.orchestrators.search.router import RoutingDecision
 
@@ -29,7 +30,7 @@ class TestOrchestratorRefinement:
 
         should, reason = orchestrator._should_refine(results, intent, decisions)
         assert should is True
-        assert reason == "no_results"
+        assert reason == RefinementReason.NO_RESULTS
 
         # 2. No results + Explicit filters -> False (Don't broaden user intent)
         decisions_filtered = [
@@ -55,7 +56,7 @@ class TestOrchestratorRefinement:
             low_conf_results, intent, decisions
         )
         assert should is True
-        assert reason == "low_confidence"
+        assert reason == RefinementReason.LOW_CONFIDENCE
 
     @pytest.mark.asyncio
     async def test_refine_actions(self, orchestrator):
@@ -69,7 +70,7 @@ class TestOrchestratorRefinement:
             intent={},
             results=[],
             previous_decisions=decisions,
-            reason="no_results",
+            reason=RefinementReason.NO_RESULTS,
         )
 
         assert len(refined) == 1
@@ -90,7 +91,7 @@ class TestOrchestratorRefinement:
             intent={},
             results=[],
             previous_decisions=decisions,
-            reason="low_confidence",
+            reason=RefinementReason.LOW_CONFIDENCE,
         )
 
         # Should try fulltext/vector if not used
