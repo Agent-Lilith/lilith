@@ -7,6 +7,8 @@ Defines the canonical types for:
 
 MCP servers implement search_capabilities() and unified_search().
 The agent reads capabilities at bootstrap and routes queries accordingly.
+
+Contract v1.1: Added mode (search|count|aggregate), sort, group_by.
 """
 
 from __future__ import annotations
@@ -26,6 +28,24 @@ class RetrievalMethod(StrEnum):
     FULLTEXT = "fulltext"
     VECTOR = "vector"
     GRAPH = "graph"  # reserved for Phase 2
+
+
+# ---------------------------------------------------------------------------
+# Search modes
+# ---------------------------------------------------------------------------
+
+
+class SearchMode(StrEnum):
+    """Operation mode for unified_search."""
+
+    SEARCH = "search"  # Return ranked document list (default)
+    COUNT = "count"  # Return total matching count only
+    AGGREGATE = "aggregate"  # Group by field, return top groups with counts
+
+
+class SortOrder(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +88,14 @@ class SearchCapabilities(BaseModel):
         description="Which retrieval methods this server supports"
     )
     supported_filters: list[FilterSpec] = Field(default_factory=list)
+    supported_modes: list[str] = Field(
+        default_factory=lambda: ["search"],
+        description="Supported modes: search, count, aggregate",
+    )
+    supported_group_by_fields: list[str] = Field(
+        default_factory=list,
+        description="Fields available for aggregate group_by (e.g. from_email, contact_id)",
+    )
     max_limit: int = Field(default=50)
     default_limit: int = Field(default=10)
     sort_fields: list[str] = Field(default_factory=list)
@@ -104,6 +132,28 @@ class UnifiedSearchRequest(BaseModel):
     filters: list[FilterClause] | None = Field(default=None)
     top_k: int = Field(default=10, ge=1, le=100)
     include_scores: bool = Field(default=True)
+    mode: str = Field(
+        default="search",
+        description="search | count | aggregate. count returns total_available only; aggregate uses group_by.",
+    )
+    sort_field: str | None = Field(
+        default=None,
+        description="Sort field (must be in server's sort_fields). Overrides default ranking.",
+    )
+    sort_order: str = Field(
+        default="desc",
+        description="asc | desc. Used when sort_field is set.",
+    )
+    group_by: str | None = Field(
+        default=None,
+        description="Field to group by for aggregate mode (e.g. from_email, contact_push_name).",
+    )
+    aggregate_top_n: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Max groups to return in aggregate mode.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -154,11 +204,41 @@ class SearchResultV1(BaseModel):
         return total_score / total_weight if total_weight > 0 else 0.0
 
 
+class AggregateGroup(BaseModel):
+    """One group from aggregate mode."""
+
+    group_value: str = Field(description="Value of the group_by field")
+    count: int = Field(description="Number of items in this group")
+    label: str | None = Field(
+        default=None,
+        description="Human-readable label (e.g. contact name instead of JID)",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra fields (e.g. contact_push_name, from_email)",
+    )
+
+
 class UnifiedSearchResponse(BaseModel):
     """Returned by each MCP server's unified_search tool."""
 
     results: list[SearchResultV1] = Field(default_factory=list)
-    total_available: int | None = Field(default=None)
+    total_available: int | None = Field(
+        default=None,
+        description="True total matching count. In search mode may be len(results) if unknown.",
+    )
+    mode: str = Field(
+        default="search",
+        description="Mode that was executed: search, count, or aggregate.",
+    )
+    count: int | None = Field(
+        default=None,
+        description="For count mode: total matching documents.",
+    )
+    aggregates: list[AggregateGroup] = Field(
+        default_factory=list,
+        description="For aggregate mode: top groups with counts.",
+    )
     methods_executed: list[str] = Field(default_factory=list)
     timing_ms: dict[str, float] = Field(
         default_factory=dict,

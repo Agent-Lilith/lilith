@@ -100,3 +100,17 @@ class CapabilityRegistry:
         if not caps:
             return False
         return method in [str(m) for m in caps.supported_methods]
+
+    def supports_mode(self, source_name: str, mode: str) -> bool:
+        caps = self._capabilities.get(source_name)
+        if not caps:
+            return False
+        modes = getattr(caps, "supported_modes", None) or ["search"]
+        return mode in modes
+
+    def supports_group_by(self, source_name: str, field: str) -> bool:
+        caps = self._capabilities.get(source_name)
+        if not caps:
+            return False
+        fields = getattr(caps, "supported_group_by_fields", None) or []
+        return field in fields

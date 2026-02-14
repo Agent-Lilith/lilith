@@ -16,14 +16,14 @@ import re
 import time
 from typing import Any
 
-from src.contracts.mcp_search_v1 import SearchResultV1
+from src.contracts.mcp_search_v1 import AggregateGroup, SearchResultV1
 from src.core.logger import logger
 from src.core.prompts import load_search_prompt
 from src.core.worker import current_llm_client
 from src.llm.vllm_client import create_client
 from src.observability import traceable
 from src.orchestrators.search.capabilities import CapabilityRegistry
-from src.orchestrators.search.dispatcher import MCPSearchDispatcher
+from src.orchestrators.search.dispatcher import DispatcherResult, MCPSearchDispatcher
 from src.orchestrators.search.entity_extraction import extract_entity
 from src.orchestrators.search.fusion import WeightedFusionRanker
 from src.orchestrators.search.interface import SearchBackend
@@ -226,8 +226,18 @@ class UniversalSearchOrchestrator:
     async def _execute_routing(
         self,
         decisions: list[RoutingDecision],
-    ) -> tuple[list[SearchResultV1], list[str]]:
-        """Execute all routing decisions in parallel."""
+    ) -> tuple[
+        list[SearchResultV1],
+        list[str],
+        int | None,
+        list[AggregateGroup],
+        str | None,
+        str | None,
+    ]:
+        """Execute all routing decisions in parallel.
+
+        Returns: (results, errors, count, aggregates, count_source, aggregates_source)
+        """
         tasks = []
         for decision in decisions:
             tasks.append(self._execute_one(decision))
@@ -236,22 +246,41 @@ class UniversalSearchOrchestrator:
 
         all_results: list[SearchResultV1] = []
         all_errors: list[str] = []
+        count: int | None = None
+        aggregates: list[AggregateGroup] = []
+        count_source: str | None = None
+        aggregates_source: str | None = None
+
         for i, result in enumerate(results_list):
             if isinstance(result, Exception):
                 all_errors.append(f"{decisions[i].source}: {result!s}")
                 logger.warning("Search failed for %s: %s", decisions[i].source, result)
                 continue
             if isinstance(result, tuple):
-                results, errors = result
-                all_results.extend(results)
-                all_errors.extend(errors)
+                part_results, part_errors, dres = result
+                all_results.extend(part_results)
+                all_errors.extend(part_errors)
+                if isinstance(dres, DispatcherResult):
+                    if dres.count is not None and count_source is None:
+                        count = dres.count
+                        count_source = dres.source
+                    if dres.aggregates and aggregates_source is None:
+                        aggregates = dres.aggregates
+                        aggregates_source = dres.source
 
-        return all_results, all_errors
+        return (
+            all_results,
+            all_errors,
+            count,
+            aggregates,
+            count_source,
+            aggregates_source,
+        )
 
     async def _execute_one(
         self,
         decision: RoutingDecision,
-    ) -> tuple[list[SearchResultV1], list[str]]:
+    ) -> tuple[list[SearchResultV1], list[str], DispatcherResult | None]:
         """Execute a single routing decision against either MCP or direct backend."""
         source = decision.source
         errors: list[str] = []
@@ -259,26 +288,31 @@ class UniversalSearchOrchestrator:
         # Try MCP dispatcher first
         if self._dispatcher.has_source(source):
             try:
-                results = await self._dispatcher.search(
+                dres = await self._dispatcher.search(
                     source=source,
                     query=decision.query,
                     methods=decision.methods,
                     filters=decision.filters,
                     top_k=10,
+                    mode=decision.mode,
+                    sort_field=decision.sort_field,
+                    sort_order=decision.sort_order,
+                    group_by=decision.group_by,
+                    aggregate_top_n=decision.aggregate_top_n,
                 )
                 logger.debug(
-                    "MCP search %s: %s results, methods=%s",
+                    "MCP search %s: %s results, mode=%s",
                     source,
-                    len(results),
-                    decision.methods,
+                    len(dres.results),
+                    dres.mode,
                 )
-                return results, errors
+                return dres.results, errors, dres
             except Exception as e:
                 errors.append(f"{source}: MCP call failed: {e!s}")
                 logger.warning("MCP search failed for %s: %s", source, e)
-                return [], errors
+                return [], errors, DispatcherResult(source=source, mode=decision.mode)
 
-        # Try direct backend
+        # Try direct backend (search mode only; no count/aggregate)
         backend = self._direct_backends.get(source)
         if backend:
             try:
@@ -294,14 +328,19 @@ class UniversalSearchOrchestrator:
                     len(results),
                     decision.methods,
                 )
-                return results, errors
+                dres = DispatcherResult(
+                    results=results,
+                    source=source,
+                    mode="search",
+                )
+                return results, errors, dres
             except Exception as e:
                 errors.append(f"{source}: {e!s}")
                 logger.warning("Direct search failed for %s: %s", source, e)
-                return [], errors
+                return [], errors, DispatcherResult(source=source, mode="search")
 
         errors.append(f"No handler for source '{source}'")
-        return [], errors
+        return [], errors, DispatcherResult(source=source, mode=decision.mode)
 
     def _should_refine(
         self,
@@ -453,11 +492,23 @@ class UniversalSearchOrchestrator:
         query: str,
         intent: dict[str, Any],
         plan: list[dict[str, Any]],
-    ) -> tuple[list[SearchResultV1], list[RoutingDecision], list[str]]:
+    ) -> tuple[
+        list[SearchResultV1],
+        list[RoutingDecision],
+        list[str],
+        int | None,
+        list[AggregateGroup],
+        str | None,
+        str | None,
+    ]:
         """Execute retrieval_plan step by step; extract entity between steps for entity_from_previous."""
         all_results: list[SearchResultV1] = []
         all_decisions: list[RoutingDecision] = []
         errors: list[str] = []
+        count: int | None = None
+        aggregates: list[AggregateGroup] = []
+        count_source: str | None = None
+        aggregates_source: str | None = None
         extra_filters: list[dict[str, Any]] | None = None
 
         for step_idx, step in enumerate(plan):
@@ -502,25 +553,68 @@ class UniversalSearchOrchestrator:
                 )
                 continue
 
-            step_results, step_errors = await self._execute_routing(decisions)
+            (
+                step_results,
+                step_errors,
+                step_count,
+                step_aggregates,
+                step_count_src,
+                step_agg_src,
+            ) = await self._execute_routing(decisions)
             all_results.extend(step_results)
             all_decisions.extend(decisions)
             errors.extend(step_errors)
+            if step_count is not None and count_source is None:
+                count = step_count
+                count_source = step_count_src
+            if step_aggregates and aggregates_source is None:
+                aggregates = step_aggregates
+                aggregates_source = step_agg_src
 
             # Prepare filters for next step if it needs entity from this step
             next_step = plan[step_idx + 1] if step_idx + 1 < len(plan) else None
-            if next_step and next_step.get("entity_from_previous") and step_results:
-                entity = await extract_entity(step_results, llm_generate=self._generate)
-                extra_filters = entity.to_filters()
-                if not extra_filters:
-                    logger.warning(
-                        "Multihop: no entity extracted from step %s for next step",
-                        step_idx,
+            if next_step and next_step.get("entity_from_previous"):
+                if step_aggregates:
+                    # Use top aggregate group for from_name filter
+                    top = step_aggregates[0] if step_aggregates else None
+                    if top:
+                        name = top.label or top.group_value
+                        if name:
+                            extra_filters = [
+                                {"field": "from_name", "operator": "contains", "value": name}
+                            ]
+                            logger.info(
+                                "Multihop: entity from aggregates -> from_name=%s",
+                                name,
+                            )
+                        else:
+                            extra_filters = None
+                    else:
+                        extra_filters = None
+                elif step_results:
+                    entity = await extract_entity(
+                        step_results, llm_generate=self._generate
                     )
+                    extra_filters = entity.to_filters()
+                    if not extra_filters:
+                        logger.warning(
+                            "Multihop: no entity extracted from step %s for next step",
+                            step_idx,
+                        )
+                else:
+                    extra_filters = None
             else:
                 extra_filters = None
 
-        return all_results, all_decisions, errors
+        return (
+            all_results,
+            all_decisions,
+            errors,
+            count,
+            aggregates,
+            count_source,
+            aggregates_source,
+        )
 
     @traceable(name="universal_search", run_type="chain")
     async def search(
@@ -612,9 +706,15 @@ class UniversalSearchOrchestrator:
         if use_multihop:
             # 3a. Multi-hop: run steps sequentially with entity extraction between steps
             t0 = time.monotonic()
-            all_results, decisions_for_run, exec_errors = await self._run_multihop(
-                query, intent, validated_plan
-            )
+            (
+                all_results,
+                decisions_for_run,
+                exec_errors,
+                count,
+                aggregates,
+                count_source,
+                aggregates_source,
+            ) = await self._run_multihop(query, intent, validated_plan)
             timing_ms["routing"] = round((time.monotonic() - t0) * 1000, 1)
             timing_ms["execution"] = timing_ms["routing"]
             errors.extend(exec_errors)
@@ -671,9 +771,14 @@ class UniversalSearchOrchestrator:
                 )
 
             t0 = time.monotonic()
-            all_results, exec_errors = await self._execute_routing(
-                routing_plan.decisions
-            )
+            (
+                all_results,
+                exec_errors,
+                count,
+                aggregates,
+                count_source,
+                aggregates_source,
+            ) = await self._execute_routing(routing_plan.decisions)
             timing_ms["execution"] = round((time.monotonic() - t0) * 1000, 1)
             errors.extend(exec_errors)
             decisions_for_run = routing_plan.decisions
@@ -682,10 +787,16 @@ class UniversalSearchOrchestrator:
         # 6. Determine if query is personal
         is_personal = self._is_personal_query(intent)
 
+        # 6b. Skip refinement for count/aggregate modes
+        first_mode = (
+            decisions_for_run[0].mode if decisions_for_run else "search"
+        )
+        skip_refinement = first_mode in ("count", "aggregate")
+
         # 7. Refinement loop
         iterations = 1
         notes: list[str] = []
-        if do_refinement:
+        if do_refinement and not skip_refinement:
             for _ in range(self._max_refinement_rounds):
                 should_refine, reason = self._should_refine(
                     all_results,
@@ -712,9 +823,14 @@ class UniversalSearchOrchestrator:
                 if not refined_decisions:
                     break
 
-                refined_results, refined_errors = await self._execute_routing(
-                    refined_decisions
-                )
+                (
+                    refined_results,
+                    refined_errors,
+                    _,
+                    _,
+                    _,
+                    _,
+                ) = await self._execute_routing(refined_decisions)
                 all_results.extend(refined_results)
                 errors.extend(refined_errors)
                 timing_ms["refinement"] = round((time.monotonic() - t0) * 1000, 1)
@@ -742,19 +858,30 @@ class UniversalSearchOrchestrator:
             timing_ms["total"],
         )
 
+        meta: dict[str, Any] = {
+            "query": query,
+            "sources_queried": sources_queried,
+            "methods_used": methods_used,
+            "iterations": iterations,
+            "total_results": len(ranked),
+            "complexity": complexity_for_meta,
+            "timing_ms": timing_ms,
+        }
+        if count is not None:
+            meta["count"] = count
+            meta["count_source"] = count_source
+        if aggregates:
+            meta["aggregates"] = [
+                {"group_value": a.group_value, "count": a.count, "label": a.label}
+                for a in aggregates
+            ]
+            meta["aggregates_source"] = aggregates_source
+
         return UniversalSearchResponse(
             results=ranked,
             errors=errors,
             notes=notes,
-            meta={
-                "query": query,
-                "sources_queried": sources_queried,
-                "methods_used": methods_used,
-                "iterations": iterations,
-                "total_results": len(ranked),
-                "complexity": complexity_for_meta,
-                "timing_ms": timing_ms,
-            },
+            meta=meta,
         )
 
     def _is_personal_query(self, intent: dict[str, Any]) -> bool:

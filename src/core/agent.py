@@ -317,16 +317,16 @@ class Agent:
         if tool_name == "universal_search":
             user_msg = self._get_last_user_message()
             conversation_context = self._get_conversation_context()
-            # Dedup: same user message and same conversation context = same logical search
-            if (
-                self._last_search_user_msg == user_msg
-                and self._last_search_context == conversation_context
-                and self._last_search_result
-            ):
+            # Dedup: same user message = same logical search (conversation_context
+            # grows each turn so keying on it would never hit cache on repeat calls)
+            if self._last_search_user_msg == user_msg and self._last_search_result:
                 logger.info(
                     "Search dedup: returning cached result for '%s'", user_msg[:60]
                 )
-                result_content = self._last_search_result
+                result_content = (
+                    self._last_search_result
+                    + "\n\n(Same results as previous search for this question; answer from these.)"
+                )
                 result_msg = f"TOOL_RESULT({tool_name}): {result_content}"
                 self.conversation.append(Message(role="user", content=result_msg))
                 if on_event is not None:

@@ -24,6 +24,9 @@ Return a single JSON object with exactly these fields:
   - **goal** (string): Short label for the step, e.g. "identify_latest_contact".
   - **entity_from_previous** (boolean): True if this step depends on an entity identified in the previous step. Only step 2+ can set this. Omit or false for step 1.
   If unsure of the step order, set retrieval_plan to null. The system will run a single-step search using source_hints.
+- **search_mode** (string, optional): "search" | "count" | "aggregate". Use "count" for "how many" queries; "aggregate" for "top N people/contacts" or "who do I talk to most". Omit for normal search.
+- **aggregate_group_by** (string, optional): When search_mode is "aggregate", the field to group by: "from_email", "contact_push_name", "chat_id", "domain", "folder". Omit if not aggregate.
+- **aggregate_top_n** (number, optional): When search_mode is "aggregate", how many top groups to return. Default 10.
 
 ## Rules
 
@@ -45,5 +48,11 @@ Conversation: "who was the last person that messaged me on WhatsApp? find their 
 
 Conversation: "find that article about machine learning I bookmarked last month"
 {"intent": "recall", "entities": [{"name": "machine learning", "role": "topic"}], "temporal": "last month", "source_hints": ["browser_bookmarks"], "complexity": "simple", "retrieval_plan": null}
+
+Conversation: "how many emails do I have from Sarah?"
+{"intent": "find_information", "entities": [{"name": "Sarah", "role": "sender"}], "temporal": null, "source_hints": ["email"], "complexity": "simple", "retrieval_plan": null, "search_mode": "count"}
+
+Conversation: "top 3 people I talk to most on WhatsApp"
+{"intent": "find_person", "entities": [], "temporal": null, "source_hints": ["whatsapp"], "complexity": "simple", "retrieval_plan": null, "search_mode": "aggregate", "aggregate_group_by": "contact_push_name", "aggregate_top_n": 3}
 
 Return only valid JSON. No explanation, no markdown fencing.

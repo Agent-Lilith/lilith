@@ -16,7 +16,32 @@ def _format_response(response: UniversalSearchResponse) -> str:
 
     parts: list[str] = []
 
-    # Header
+    # Count mode: just the number
+    meta_count = meta.get("count")
+    if meta_count is not None:
+        count_source = meta.get("count_source", "unknown")
+        header = f"Count: {meta_count} from {count_source}"
+        if total_ms:
+            header += f" [{total_ms:.0f}ms]"
+        parts.append(header)
+        return "\n".join(parts)
+
+    # Aggregate mode: top groups with counts
+    aggregates = meta.get("aggregates")
+    if aggregates:
+        agg_source = meta.get("aggregates_source", "unknown")
+        header = f"Aggregate: top {len(aggregates)} groups from {agg_source}"
+        if total_ms:
+            header += f" [{total_ms:.0f}ms]"
+        parts.append(header)
+        parts.append("")
+        for i, agg in enumerate(aggregates, 1):
+            label = agg.get("label") or agg.get("group_value", "?")
+            cnt = agg.get("count", 0)
+            parts.append(f"{i}. {label}: {cnt}")
+        return "\n".join(parts)
+
+    # Header for search mode
     header = f"Search: {count} results from {sources}"
     if methods:
         header += f" ({methods})"

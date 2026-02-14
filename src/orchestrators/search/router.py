@@ -25,6 +25,11 @@ class RoutingDecision:
     methods: list[str]
     query: str
     filters: list[dict[str, Any]] = field(default_factory=list)
+    mode: str = "search"  # search | count | aggregate
+    sort_field: str | None = None
+    sort_order: str = "desc"
+    group_by: str | None = None
+    aggregate_top_n: int = 10
 
 
 @dataclass
@@ -104,6 +109,19 @@ _RELATIONSHIP_KEYWORDS = {
     "regarding",
 }
 
+# Count-mode patterns (substring match, case-insensitive)
+_COUNT_KEYWORDS = ("how many", "count of", "number of", "total count", "total number")
+
+# Aggregate-mode patterns: "top N people/contacts" etc.
+_AGGREGATE_TOP_PATTERN = re.compile(
+    r"\b(?:top|first|best)\s+(\d+)\s+(?:people|contacts?|senders?|chats?)\b",
+    re.IGNORECASE,
+)
+_AGGREGATE_MOST_PATTERN = re.compile(
+    r"\b(?:people|contacts?|who)\s+(?:I\s+)?(?:talk\s+to|message|email)\s+(?:the\s+)?most\b",
+    re.IGNORECASE,
+)
+
 
 class RetrievalRouter:
     """Routes queries to appropriate sources and methods based on capabilities."""
@@ -130,18 +148,30 @@ class RetrievalRouter:
         # 3. Extract filters from intent
         filters = self._extract_filters(intent, query)
 
-        # 4. Select methods per source
+        # 4. Extract mode (search/count/aggregate) from intent or query
+        mode, group_by, aggregate_top_n = self._extract_mode_and_group_by(
+            intent, query, target_sources
+        )
+
+        # 5. Select methods per source
         decisions: list[RoutingDecision] = []
         for source in target_sources:
             methods = self._select_methods(source, query, filters, intent)
             # Only include filters this source actually supports
             source_filters = self._filter_for_source(source, filters)
+            # Use source-specific group_by if this source supports it
+            src_group_by = None
+            if group_by and self._capabilities.supports_group_by(source, group_by):
+                src_group_by = group_by
             decisions.append(
                 RoutingDecision(
                     source=source,
                     methods=methods,
                     query=query,
                     filters=source_filters,
+                    mode=mode,
+                    group_by=src_group_by,
+                    aggregate_top_n=aggregate_top_n,
                 )
             )
 
@@ -170,6 +200,9 @@ class RetrievalRouter:
         filters = self._extract_filters(intent, query)
         if extra_filters:
             filters = filters + extra_filters
+        mode, group_by, aggregate_top_n = self._extract_mode_and_group_by(
+            intent, query, sources
+        )
         available = set(self._capabilities.all_sources())
         decisions: list[RoutingDecision] = []
         for source in sources:
@@ -178,15 +211,58 @@ class RetrievalRouter:
                 continue
             methods = self._select_methods(source, query, filters, intent)
             source_filters = self._filter_for_source(source, filters)
+            src_group_by = None
+            if group_by and self._capabilities.supports_group_by(source, group_by):
+                src_group_by = group_by
             decisions.append(
                 RoutingDecision(
                     source=source,
                     methods=methods,
                     query=query,
                     filters=source_filters,
+                    mode=mode,
+                    group_by=src_group_by,
+                    aggregate_top_n=aggregate_top_n,
                 )
             )
         return decisions
+
+    def _extract_mode_and_group_by(
+        self, intent: dict[str, Any], query: str, sources: list[str]
+    ) -> tuple[str, str | None, int]:
+        """Extract search mode, group_by field, and aggregate_top_n from intent/query."""
+        query_lower = query.lower()
+
+        # Intent may specify mode and group_by (from LLM)
+        if intent.get("search_mode") in ("count", "aggregate"):
+            mode = intent["search_mode"]
+            group_by = intent.get("aggregate_group_by")
+            top_n = int(intent.get("aggregate_top_n", 10))
+            return mode, group_by, min(100, max(1, top_n))
+
+        # Count patterns
+        if any(kw in query_lower for kw in _COUNT_KEYWORDS):
+            return "count", None, 10
+
+        # Aggregate: "top N people/contacts" or "people I talk to most"
+        top_match = _AGGREGATE_TOP_PATTERN.search(query)
+        top_n = int(top_match.group(1)) if top_match else 10
+
+        if _AGGREGATE_MOST_PATTERN.search(query) or top_match:
+            # Pick group_by from first source that supports it
+            group_by_candidates: list[tuple[str, str]] = [
+                ("whatsapp", "contact_push_name"),
+                ("email", "from_email"),
+                ("browser_history", "domain"),
+                ("browser_bookmarks", "folder"),
+            ]
+            for src, field in group_by_candidates:
+                if src in sources and self._capabilities.supports_group_by(
+                    src, field
+                ):
+                    return "aggregate", field, min(100, max(1, top_n))
+
+        return "search", None, 10
 
     def _classify_complexity(self, intent: dict[str, Any], query: str) -> str:
         """Classify query as simple or complex."""
