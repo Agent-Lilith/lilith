@@ -42,6 +42,7 @@ class Config:
     mcp_whatsapp_args: list[str]
     session_id: str | None
     sessions_dir: Path
+    mcp_forward_env: dict[str, str]
 
     @classmethod
     def load(cls) -> "Config":
@@ -51,6 +52,20 @@ class Config:
         def mcp_args(env_dir: str, default_subdir: str) -> list[str]:
             path = os.getenv(env_dir) or str(agents_dir / default_subdir)
             return ["--directory", path, "run", "mcp"]
+
+        forwarded_keys = [
+            "LILITH_SCORE_CALIBRATION_PATH",
+            "LILITH_SCORE_WINDOW_SIZE",
+            "LILITH_SCORE_DRIFT_Z",
+            "LILITH_SCORE_RECENCY_HALF_LIFE_DAYS",
+            "LILITH_ENABLE_LEARNED_RANKING",
+            "LILITH_SOURCE_RELIABILITY_PRIORS",
+        ]
+        mcp_forward_env = {
+            key: value
+            for key in forwarded_keys
+            if (value := os.getenv(key)) is not None and value.strip() != ""
+        }
 
         return cls(
             project_root=project_root,
@@ -98,6 +113,7 @@ class Config:
             mcp_whatsapp_args=mcp_args("MCP_WHATSAPP_DIR", "lilith-whatsapp"),
             session_id=os.getenv("LILITH_SESSION_ID", "").strip() or None,
             sessions_dir=project_root / "logs" / "sessions",
+            mcp_forward_env=mcp_forward_env,
         )
 
     def validate(self) -> list[str]:

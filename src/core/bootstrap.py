@@ -112,7 +112,11 @@ async def setup_tools() -> ToolRegistry:
     if config.mcp_email_command:
         from src.mcp_client.client import MCPClient
 
-        mcp_email_client = MCPClient(config.mcp_email_command, config.mcp_email_args)
+        mcp_email_client = MCPClient(
+            config.mcp_email_command,
+            config.mcp_email_args,
+            env=config.mcp_forward_env,
+        )
 
         async def mcp_email_call(name: str, args: dict):
             return await mcp_email_client.call_tool(name, args)
@@ -167,7 +171,9 @@ async def setup_tools() -> ToolRegistry:
         from src.mcp_client.client import MCPClient
 
         mcp_browser_client = MCPClient(
-            config.mcp_browser_command, config.mcp_browser_args
+            config.mcp_browser_command,
+            config.mcp_browser_args,
+            env=config.mcp_forward_env,
         )
 
         async def mcp_browser_call(name: str, args: dict):
@@ -228,7 +234,9 @@ async def setup_tools() -> ToolRegistry:
         from src.mcp_client.client import MCPClient
 
         mcp_whatsapp_client = MCPClient(
-            config.mcp_whatsapp_command, config.mcp_whatsapp_args
+            config.mcp_whatsapp_command,
+            config.mcp_whatsapp_args,
+            env=config.mcp_forward_env,
         )
 
         async def mcp_whatsapp_call(name: str, args: dict):

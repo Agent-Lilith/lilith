@@ -22,11 +22,17 @@ def _extract_text_from_content(content: list) -> str:
 
 
 class MCPClient:
-    def __init__(self, command: str, args: list[str]):
+    def __init__(
+        self,
+        command: str,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ):
         if not command:
             raise ValueError("MCP command cannot be empty")
         self._command = command
         self._args = args
+        self._env = env
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
         self._stderr_devnull: Any = None
@@ -39,7 +45,7 @@ class MCPClient:
         server_params = StdioServerParameters(
             command=self._command,
             args=self._args,
-            env=None,
+            env=self._env,
         )
         stdio_transport = await self._exit_stack.enter_async_context(
             stdio_client(server_params, errlog=self._stderr_devnull)
