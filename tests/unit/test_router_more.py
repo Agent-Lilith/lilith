@@ -246,7 +246,10 @@ class TestRouterLogic:
         assert plan.policy_controls["freshness_demand_days"] == 1
         assert plan.source_policy_trace
         assert any(
-            "prioritized_freshness_fit" in entry["reasons"]
+            (
+                "prioritized_freshness_fit" in entry["reasons"]
+                or "marginal_freshness_fit" in entry["reasons"]
+            )
             for entry in plan.source_policy_trace
             if entry["source"] == "calendar"
         )

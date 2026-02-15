@@ -1,5 +1,6 @@
 """Generic MCP client for STDIO transport. Reusable across MCP servers."""
 
+import asyncio
 import json
 import os
 from contextlib import AsyncExitStack
@@ -105,6 +106,9 @@ class MCPClient:
         if self._exit_stack is not None:
             try:
                 await self._exit_stack.aclose()
+            except asyncio.CancelledError:
+                # Swallow cancellation during orderly shutdown
+                logger.debug("MCP: close cancelled by cancel scope")
             except (GeneratorExit, RuntimeError) as e:
                 if isinstance(e, RuntimeError) and "cancel scope" not in str(e):
                     raise

@@ -1,0 +1,46 @@
+name: Retrieval Eval Gate
+
+on:
+  pull_request:
+    paths:
+      - "src/orchestrators/search/**"
+      - "src/eval/**"
+      - "benchmarks.yaml"
+      - "tests/unit/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+jobs:
+  retrieval-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run deterministic unit suite
+        run: uv run pytest tests/unit -q
+
+      - name: Run retrieval eval gate
+        run: |
+          uv run python -m src.eval.benchmark \
+            --config benchmarks.yaml \
+            --output .artifacts/retrieval_eval/latest.json \
+            --report .artifacts/retrieval_eval/latest.md \
+            --baseline src/eval/baseline_metrics.json
+
+      - name: Upload retrieval eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-eval-report
+          path: |
+            .artifacts/retrieval_eval/latest.json
+            .artifacts/retrieval_eval/latest.md

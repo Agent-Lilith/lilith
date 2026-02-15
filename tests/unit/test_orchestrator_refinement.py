@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -142,7 +142,7 @@ class TestOrchestratorRefinement:
                 ],
             )
         )
-        orchestrator._execute_routing = MagicMock(
+        orchestrator._execute_routing = AsyncMock(
             return_value=([], [], None, [], None, None)
         )
         orchestrator._fusion.fuse_and_rank = MagicMock(return_value=[])
@@ -188,7 +188,7 @@ class TestOrchestratorRefinement:
                 source_policy_trace=[],
             )
         )
-        orchestrator._execute_routing = MagicMock(
+        orchestrator._execute_routing = AsyncMock(
             return_value=([], [], None, [], None, None)
         )
         orchestrator._fusion.fuse_and_rank = MagicMock(return_value=[])

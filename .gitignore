@@ -24,3 +24,6 @@ data/*
 
 # Logs
 logs/
+
+# Generated reports
+.artifacts/

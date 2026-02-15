@@ -1,0 +1,6 @@
+{
+  "avg_precision_at_k": 0.6167,
+  "avg_coverage": 0.8,
+  "p95_latency_ms": 116.0,
+  "refinement_hit_rate": 0.4
+}

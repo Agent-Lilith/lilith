@@ -101,10 +101,15 @@ def _register_direct_backend_capabilities(
         registry.register(caps)
 
 
-async def setup_tools() -> ToolRegistry:
-    """Initialize all tools, MCP connections, and capability discovery."""
+async def setup_tools() -> tuple[ToolRegistry, list[object]]:
+    """Initialize all tools, MCP connections, and capability discovery.
+
+    Returns a tool registry and a list of external resources that need explicit shutdown
+    (e.g., MCP clients).
+    """
     registry = ToolRegistry()
     google_service = GoogleService()
+    closables: list[object] = []
 
     # Capability registry and MCP dispatcher
     capabilities = CapabilityRegistry()
@@ -130,6 +135,7 @@ async def setup_tools() -> ToolRegistry:
             config.mcp_email_args,
             env=config.mcp_forward_env,
         )
+        closables.append(mcp_email_client)
 
         async def mcp_email_call(name: str, args: dict):
             return await mcp_email_client.call_tool(name, args)
@@ -164,6 +170,7 @@ async def setup_tools() -> ToolRegistry:
             config.mcp_browser_args,
             env=config.mcp_forward_env,
         )
+        closables.append(mcp_browser_client)
 
         async def mcp_browser_call(name: str, args: dict):
             return await mcp_browser_client.call_tool(name, args)
@@ -197,6 +204,7 @@ async def setup_tools() -> ToolRegistry:
             config.mcp_whatsapp_args,
             env=config.mcp_forward_env,
         )
+        closables.append(mcp_whatsapp_client)
 
         async def mcp_whatsapp_call(name: str, args: dict):
             return await mcp_whatsapp_client.call_tool(name, args)
@@ -260,7 +268,7 @@ async def setup_tools() -> ToolRegistry:
         ", ".join(capabilities.all_sources()),
     )
 
-    return registry
+    return registry, closables
 
 
 def save_system_prompt_for_debug(registry: ToolRegistry) -> str:

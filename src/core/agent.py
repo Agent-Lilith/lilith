@@ -46,6 +46,7 @@ class Agent:
     _last_search_result: str | None = field(default=None, repr=False)
     _last_search_user_msg: str | None = field(default=None, repr=False)
     _last_search_context: str | None = field(default=None, repr=False)
+    closable_resources: list[object] = field(default_factory=list, repr=False)
 
     @classmethod
     async def create(cls) -> "Agent":
@@ -53,7 +54,7 @@ class Agent:
         if errors:
             raise FileNotFoundError("; ".join(errors))
 
-        tool_registry = await setup_tools()
+        tool_registry, closables = await setup_tools()
         system_prompt = save_system_prompt_for_debug(tool_registry)
         llm_client = create_client()
 
@@ -63,6 +64,7 @@ class Agent:
             llm_client=llm_client,
             system_prompt=system_prompt,
             tool_registry=tool_registry,
+            closable_resources=closables,
         )
 
     async def chat(
@@ -390,4 +392,20 @@ class Agent:
                     await tool.close()
                 else:
                     tool.close()
+        await self._close_closable_resources()
         logger.info("👋 Lilith shutting down")
+
+    async def _close_closable_resources(self) -> None:
+        """Close miscellaneous resources registered during bootstrap."""
+        for resource in self.closable_resources:
+            close_callable = getattr(resource, "close", None)
+            if not callable(close_callable):
+                continue
+            try:
+                result = close_callable()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.exception(
+                    "Failed to close shared resource %s", type(resource).__name__
+                )
