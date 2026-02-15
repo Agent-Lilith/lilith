@@ -615,7 +615,9 @@ class UniversalSearchOrchestrator:
                         extra_filters = None
                 elif step_results:
                     entity = await extract_entity(
-                        step_results, llm_generate=self._generate
+                        step_results,
+                        capability_lookup=self._capabilities.get,
+                        llm_generate=self._generate,
                     )
                     extra_filters = entity.to_filters()
                     if not extra_filters:

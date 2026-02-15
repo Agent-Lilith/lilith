@@ -35,26 +35,37 @@ async def _discover_capabilities(
     connection_key: str,
     dispatcher: MCPSearchDispatcher,
     registry: CapabilityRegistry,
-) -> list[str]:
+) -> tuple[list[str], dict[str, dict[str, object]]]:
     """Fetch capabilities from an MCP server and register them.
 
-    Returns list of source names discovered.
+    Returns (source names, request routing args map by source).
     """
     try:
         caps_data = await dispatcher.fetch_capabilities(connection_key, mcp_call)
         if caps_data:
             registry.register_from_dict(caps_data)
-            # Return source names
+            source_routing_args: dict[str, dict[str, object]] = {}
             if "sources" in caps_data:
-                return [s["source_name"] for s in caps_data["sources"]]
+                names: list[str] = []
+                for source_data in caps_data["sources"]:
+                    source_name = source_data["source_name"]
+                    names.append(source_name)
+                    routing_args = source_data.get("request_routing_args")
+                    if isinstance(routing_args, dict) and routing_args:
+                        source_routing_args[source_name] = routing_args
+                return names, source_routing_args
             elif "source_name" in caps_data:
-                return [caps_data["source_name"]]
+                source_name = caps_data["source_name"]
+                routing_args = caps_data.get("request_routing_args")
+                if isinstance(routing_args, dict) and routing_args:
+                    source_routing_args[source_name] = routing_args
+                return [source_name], source_routing_args
     except Exception as e:
         logger.warning(
             "Failed to discover capabilities from '%s': %s", connection_key, e
         )
 
-    return []
+    return [], {}
 
 
 # User-facing labels for direct backends (no MCP discovery)
@@ -124,7 +135,7 @@ async def setup_tools() -> ToolRegistry:
             return await mcp_email_client.call_tool(name, args)
 
         # Discover capabilities
-        email_sources = await _discover_capabilities(
+        email_sources, email_routing_args = await _discover_capabilities(
             mcp_email_call,
             "email",
             dispatcher,
@@ -135,7 +146,12 @@ async def setup_tools() -> ToolRegistry:
                 "MCP email capability discovery failed; refusing to start with hidden fallback."
             )
 
-        dispatcher.register_mcp("email", email_sources, mcp_email_call)
+        dispatcher.register_mcp(
+            "email",
+            email_sources,
+            mcp_email_call,
+            request_routing_args=email_routing_args,
+        )
         logger.info("Email MCP registered: sources=%s", email_sources)
 
     # MCP Browser connection
@@ -153,7 +169,7 @@ async def setup_tools() -> ToolRegistry:
             return await mcp_browser_client.call_tool(name, args)
 
         # Discover capabilities
-        browser_sources = await _discover_capabilities(
+        browser_sources, browser_routing_args = await _discover_capabilities(
             mcp_browser_call,
             "browser",
             dispatcher,
@@ -164,7 +180,12 @@ async def setup_tools() -> ToolRegistry:
                 "MCP browser capability discovery failed; refusing to start with hidden fallback."
             )
 
-        dispatcher.register_mcp("browser", browser_sources, mcp_browser_call)
+        dispatcher.register_mcp(
+            "browser",
+            browser_sources,
+            mcp_browser_call,
+            request_routing_args=browser_routing_args,
+        )
         logger.info("Browser MCP registered: sources=%s", browser_sources)
 
     # MCP WhatsApp connection
@@ -180,7 +201,7 @@ async def setup_tools() -> ToolRegistry:
         async def mcp_whatsapp_call(name: str, args: dict):
             return await mcp_whatsapp_client.call_tool(name, args)
 
-        whatsapp_sources = await _discover_capabilities(
+        whatsapp_sources, whatsapp_routing_args = await _discover_capabilities(
             mcp_whatsapp_call,
             "whatsapp",
             dispatcher,
@@ -191,7 +212,12 @@ async def setup_tools() -> ToolRegistry:
                 "MCP WhatsApp capability discovery failed; refusing to start with hidden fallback."
             )
 
-        dispatcher.register_mcp("whatsapp", whatsapp_sources, mcp_whatsapp_call)
+        dispatcher.register_mcp(
+            "whatsapp",
+            whatsapp_sources,
+            mcp_whatsapp_call,
+            request_routing_args=whatsapp_routing_args,
+        )
         logger.info("WhatsApp MCP registered: sources=%s", whatsapp_sources)
 
     # Build orchestrator

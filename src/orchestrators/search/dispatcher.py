@@ -40,17 +40,22 @@ class MCPSearchDispatcher:
         self._mcp_callers: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {}
         # source_name -> list of source names handled by this MCP connection
         self._connection_sources: dict[str, str] = {}  # source -> connection_key
+        # source_name -> extra unified_search args required to target this source
+        self._request_routing_args: dict[str, dict[str, Any]] = {}
 
     def register_mcp(
         self,
         connection_key: str,
         source_names: list[str],
         mcp_call: Callable[..., Awaitable[dict[str, Any]]],
+        request_routing_args: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Register an MCP connection that handles one or more sources."""
         for name in source_names:
             self._mcp_callers[name] = mcp_call
             self._connection_sources[name] = connection_key
+            if request_routing_args and request_routing_args.get(name):
+                self._request_routing_args[name] = dict(request_routing_args[name])
         logger.info(
             "Dispatcher: registered MCP connection '%s' for sources %s",
             connection_key,
@@ -96,10 +101,7 @@ class MCPSearchDispatcher:
         if group_by and mode == SearchMode.AGGREGATE:
             args["group_by"] = group_by
 
-        # For browser server, route to the correct sub-source
-        if source in ("browser_history", "browser_bookmarks"):
-            args["search_history"] = source == "browser_history"
-            args["search_bookmarks"] = source == "browser_bookmarks"
+        args.update(self._request_routing_args.get(source, {}))
 
         t0 = time.monotonic()
         try:

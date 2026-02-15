@@ -64,6 +64,11 @@ class CapabilityTier(StrEnum):
     HIGH = "high"
 
 
+class EntityValueParser(StrEnum):
+    STRING = "string"
+    EMAIL_FROM_HEADER = "email_from_header"
+
+
 # ---------------------------------------------------------------------------
 # Capability discovery
 # ---------------------------------------------------------------------------
@@ -80,6 +85,21 @@ class FilterSpec(BaseModel):
         description="Supported operators: 'eq', 'contains', 'gte', 'lte', 'in'"
     )
     description: str = Field(default="")
+
+
+class EntityExtractionRule(BaseModel):
+    """Metadata-to-filter extraction rule for cross-step entity propagation."""
+
+    target_field: str = Field(
+        description="Filter field produced from metadata, e.g. from_name"
+    )
+    metadata_key: str = Field(
+        description="Metadata key to read from search result metadata"
+    )
+    parser: EntityValueParser = Field(
+        default=EntityValueParser.STRING,
+        description="How to parse metadata value: string | email_from_header",
+    )
 
 
 class SearchCapabilities(BaseModel):
@@ -127,6 +147,14 @@ class SearchCapabilities(BaseModel):
     )
     cost_tier: CapabilityTier = Field(
         description="Expected compute/usage cost profile for planning/routing: low|medium|high."
+    )
+    request_routing_args: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional source-specific unified_search args for shared MCP endpoints.",
+    )
+    entity_extraction_rules: list[EntityExtractionRule] = Field(
+        default_factory=list,
+        description="Optional metadata parsing rules used for multi-hop entity extraction.",
     )
 
     @field_validator("alias_hints")

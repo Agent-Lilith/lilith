@@ -1,14 +1,18 @@
-"""Extract sender (or other role) entity from search results for multi-hop follow-up steps.
+"""Extract cross-step entities from search results for multi-hop follow-up steps.
 
-Uses result metadata first (e.g. contact_push_name for WhatsApp, from for email);
-falls back to LLM when metadata is missing or ambiguous.
+Uses capability-declared metadata parsing rules first; falls back to LLM when
+metadata is missing or ambiguous.
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from src.contracts.mcp_search_v1 import SearchResultV1
+from src.contracts.mcp_search_v1 import (
+    EntityExtractionRule,
+    EntityValueParser,
+    SearchResultV1,
+)
 from src.core.logger import logger
 
 # Email "from" format: "Display Name <addr@domain>" or "addr@domain"
@@ -19,32 +23,26 @@ _FROM_PATTERN = re.compile(r"^(?:(.+?)\s*<([^>]+)>|(.+))$", re.IGNORECASE)
 class ExtractedEntity:
     """Entity extracted from step results for use as filters in the next step."""
 
-    from_name: str | None = None
-    from_email: str | None = None
+    filter_values: dict[str, str] = field(default_factory=dict)
 
     def to_filters(self) -> list[dict[str, Any]]:
-        """Filters for email (and other sources that support from_name/from_email)."""
+        """Render extracted values as filter clauses for next-step routing."""
         out: list[dict[str, Any]] = []
-        if self.from_name and self.from_name.strip():
+        for field_name, value in self.filter_values.items():
+            normalized = str(value or "").strip()
+            if not normalized:
+                continue
             out.append(
                 {
-                    "field": "from_name",
+                    "field": field_name,
                     "operator": "contains",
-                    "value": self.from_name.strip(),
-                }
-            )
-        if self.from_email and self.from_email.strip():
-            out.append(
-                {
-                    "field": "from_email",
-                    "operator": "contains",
-                    "value": self.from_email.strip(),
+                    "value": normalized,
                 }
             )
         return out
 
     def is_empty(self) -> bool:
-        return not (self.from_name or self.from_email)
+        return not bool(self.filter_values)
 
 
 def _parse_email_from(s: str) -> tuple[str | None, str | None]:
@@ -67,45 +65,57 @@ def _parse_email_from(s: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def extract_from_metadata(results: list[SearchResultV1]) -> ExtractedEntity:
-    """Extract sender from result metadata. No LLM call."""
+def _extract_value_from_rule(
+    metadata: dict[str, Any], rule: EntityExtractionRule
+) -> str | None:
+    raw = metadata.get(rule.metadata_key)
+    if raw is None:
+        return None
+    if rule.parser == EntityValueParser.EMAIL_FROM_HEADER:
+        name, email = _parse_email_from(str(raw))
+        if rule.target_field == "from_name":
+            return name
+        if rule.target_field == "from_email":
+            return email
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
+def extract_from_metadata(
+    results: list[SearchResultV1],
+    capability_lookup: Any = None,
+) -> ExtractedEntity:
+    """Extract entity fields from result metadata via capability-declared rules."""
     entity = ExtractedEntity()
     for r in results:
         if not r.metadata:
             continue
-        meta = r.metadata
-        if r.source == "whatsapp":
-            name = meta.get("contact_push_name")
-            if name and str(name).strip():
-                entity.from_name = str(name).strip()
-                logger.debug(
-                    "Entity from whatsapp metadata: from_name=%s", entity.from_name
-                )
-                return entity
-        if r.source == "email":
-            from_str = meta.get("from")
-            if from_str:
-                name, email = _parse_email_from(str(from_str))
-                if name:
-                    entity.from_name = name
-                if email:
-                    entity.from_email = email
-                if not entity.is_empty():
-                    logger.debug(
-                        "Entity from email metadata: from_name=%s from_email=%s",
-                        entity.from_name,
-                        entity.from_email,
-                    )
-                    return entity
+        caps = capability_lookup(r.source) if capability_lookup else None
+        rules = getattr(caps, "entity_extraction_rules", None) if caps else None
+        if not rules:
+            continue
+        for rule in rules:
+            value = _extract_value_from_rule(r.metadata, rule)
+            if value:
+                entity.filter_values[rule.target_field] = value
+        if not entity.is_empty():
+            logger.debug(
+                "Entity from metadata using capability rules: source=%s fields=%s",
+                r.source,
+                sorted(entity.filter_values.keys()),
+            )
+            return entity
     return entity
 
 
 async def extract_entity(
     results: list[SearchResultV1],
+    capability_lookup: Any = None,
     llm_generate: Any = None,
 ) -> ExtractedEntity:
-    """Extract sender entity from step results. Tries metadata first, then optional LLM."""
-    entity = extract_from_metadata(results)
+    """Extract entity from step results. Uses capability metadata rules first."""
+    entity = extract_from_metadata(results, capability_lookup=capability_lookup)
     if not entity.is_empty():
         return entity
     if llm_generate and results:
@@ -175,6 +185,11 @@ def _parse_llm_entity(text: str) -> ExtractedEntity:
     if m:
         name = m.group(1).strip()
         email = m.group(2).strip()
-        return ExtractedEntity(from_name=name or None, from_email=email or None)
+        values: dict[str, str] = {}
+        if name:
+            values["from_name"] = name
+        if email:
+            values["from_email"] = email
+        return ExtractedEntity(filter_values=values)
     # Plain name
-    return ExtractedEntity(from_name=text)
+    return ExtractedEntity(filter_values={"from_name": text})
